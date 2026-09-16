@@ -22,11 +22,12 @@
    ========================================================================= */
 import { chromium } from 'playwright';
 const browserPath = process.env.ANF3_BROWSER_PATH || chromium.executablePath();
+const baseUrl = process.env.ANF3_BROWSER_BASE || 'http://127.0.0.1:5173';
 const b = await chromium.launch({ executablePath: browserPath });
 const ctx = await b.newContext({ viewport:{width:1440,height:900} });
 await ctx.addInitScript(()=>{ try{ localStorage.setItem('anf3.operator.v2', JSON.stringify({name:'สมชาย ใจดี',code:'4417'})); Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => sessionStorage.getItem('anf3-validation-offline') !== '1' }); }catch{} });
 const p = await ctx.newPage();
-await p.goto('http://127.0.0.1:8000/#/records/water/pw-prw', { waitUntil:'domcontentloaded' });
+await p.goto(`${baseUrl}/#/records/water/pw-prw?building=Building%2010`, { waitUntil:'domcontentloaded' });
 await p.evaluate(async () => {
   const open=()=>new Promise((res,rej)=>{const r=indexedDB.open('anf3-read-cache-v1',1);
     r.onupgradeneeded=()=>{const d=r.result;for(const s of ['records','searchPages','metadata'])if(!d.objectStoreNames.contains(s))d.createObjectStore(s,{keyPath:'id'});};
@@ -35,23 +36,24 @@ await p.evaluate(async () => {
   for (const no of ['WT-25-0001','WT-25-0002','WT-25-0003'])
     await put('records',{id:`water:pw-prw:${no}`,domain:'water',workflow:'pw-prw',recordKey:no,
       record:{worksheetNo:no,building:'Building 10',samplingDate:'2026-09-01'},samples:[],fetchedAt:new Date().toISOString()});
-  await put('searchPages',{id:'pw-prw',fetchedAt:new Date().toISOString(),
+  await put('searchPages',{id:'pw-prw|building=building 10',fetchedAt:new Date().toISOString(),
     items:['WT-25-0001','WT-25-0002','WT-25-0003'].map(no=>({recordKey:no,worksheetNo:no,recordId:no,title:no,building:'Building 10'}))});
 });
 await p.evaluate(() => { sessionStorage.setItem('anf3-validation-offline', '1'); window.dispatchEvent(new Event('offline')); });
 await p.reload({ waitUntil:'domcontentloaded' }); await p.waitForTimeout(1500);
 const cachedDialog = p.getByRole('alertdialog', { name: 'No internet connection' });
 if (await cachedDialog.isVisible()) await cachedDialog.getByRole('button', { name: 'Read cached' }).click();
-await p.locator('.hit').first().waitFor({ state: 'visible', timeout: 10000 });
+await p.getByRole('row').filter({ hasText: 'WT-25-0001' }).waitFor({ state: 'visible', timeout: 10000 });
 
 // tick two rows, then open a record — the ticks must survive
-await p.locator('.hit input[type=checkbox]').nth(0).check();
-await p.locator('.hit input[type=checkbox]').nth(1).check();
-const before = await p.locator('.hit input[type=checkbox]:checked').count();
+const rows = p.locator('.record-table tbody tr');
+await rows.nth(0).getByRole('switch').click();
+await rows.nth(1).getByRole('switch').click();
+const before = await p.locator('.record-table [role="switch"][aria-checked="true"]').count();
 console.log('ticked before opening a record:', before);
-await p.locator('.hit button').nth(2).click();
+await rows.nth(0).getByRole('button', { name: 'Details' }).click();
 await p.waitForTimeout(1600);
-const after = await p.locator('.hit input[type=checkbox]:checked').count();
+const after = await p.locator('.record-table [role="switch"][aria-checked="true"]').count();
 console.log('ticked after  opening a record:', after);
 const fail = [];
 if (after !== before) fail.push('selection lost on navigation');
@@ -60,7 +62,7 @@ else console.log('OK — selection survived');
 await p.evaluate(() => { sessionStorage.removeItem('anf3-validation-offline'); window.dispatchEvent(new Event('online')); });
 await p.waitForTimeout(300);
 
-await p.goto('http://127.0.0.1:8000/#/settings', { waitUntil: 'domcontentloaded' });
+await p.goto(`${baseUrl}/#/settings`, { waitUntil: 'domcontentloaded' });
 await p.waitForTimeout(1200);
 
 const options = await p.locator('.quality-option').count();
@@ -85,7 +87,7 @@ console.log('after reload        -> data-motion:', await motionAttr(), '| chosen
 if ((await motionAttr()) !== 'reduced') fail.push('the choice did not survive a reload');
 
 // FAST must actually reach the 3D shelf: dpr 1, no supersampling
-await p.goto('http://127.0.0.1:8000/#/', { waitUntil: 'domcontentloaded' });
+await p.goto(`${baseUrl}/#/`, { waitUntil: 'domcontentloaded' });
 await p.waitForTimeout(5000);
 const fastCanvas = await p.evaluate(() => {
   const c = document.querySelector('canvas');
@@ -95,14 +97,14 @@ console.log('shelf render ratio on เร็ว :', fastCanvas);
 if (fastCanvas !== null && fastCanvas > 1.05) fail.push(`fast should render at 1x, got ${fastCanvas}`);
 
 // FULL must restore supersampling
-await p.goto('http://127.0.0.1:8000/#/settings', { waitUntil: 'domcontentloaded' });
+await p.goto(`${baseUrl}/#/settings`, { waitUntil: 'domcontentloaded' });
 await p.waitForTimeout(800);
 await p.locator('.quality-option:has(input[value="full"])').click();
 await p.waitForTimeout(400);
 console.log('after choosing เต็มที่ -> data-motion:', await motionAttr());
 if ((await motionAttr()) !== 'full') fail.push('full did not set data-motion=full');
 
-await p.goto('http://127.0.0.1:8000/#/', { waitUntil: 'domcontentloaded' });
+await p.goto(`${baseUrl}/#/`, { waitUntil: 'domcontentloaded' });
 await p.waitForTimeout(5000);
 const fullCanvas = await p.evaluate(() => {
   const c = document.querySelector('canvas');

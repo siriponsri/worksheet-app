@@ -61,6 +61,9 @@ ACTIONS = {
     'pdf_downloaded',     # the file was saved
     'pdf_batch',          # several worksheets were merged and printed together
     'operator_changed',   # somebody else took over the machine
+    'backup_succeeded',    # a generated artifact reached the project share
+    'backup_failed',       # local generation succeeded but share backup did not
+    'backup_retried',      # a pending share backup was attempted again
 }
 
 _WRITE_LOCK = threading.Lock()

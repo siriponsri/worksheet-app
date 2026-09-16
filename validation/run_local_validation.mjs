@@ -18,9 +18,6 @@ function run(name, command, args, evidenceClass = 'VERIFIED_BY_EXECUTION') {
   if (process.platform === 'win32' && command === 'pnpm') {
     actualCommand = process.env.ComSpec || 'cmd.exe';
     actualArgs = ['/d', '/s', '/c', ['pnpm', ...args].join(' ')];
-  } else if (process.platform === 'win32' && command === 'python') {
-    actualCommand = 'py';
-    actualArgs = ['-3.11', ...args];
   }
   const result = spawnSync(actualCommand, actualArgs, {
     cwd: root, encoding: 'utf8', timeout: 180000, windowsHide: true

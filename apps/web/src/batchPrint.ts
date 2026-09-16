@@ -45,6 +45,9 @@ export type BatchPart = {
   worksheetNo: string;
   bytes: ArrayBuffer;
   pageCount: number;
+  pdfId?: string;
+  backupStatus?: 'succeeded' | 'pending' | 'disabled' | 'failed';
+  backupError?: string;
 };
 
 export type BatchConflict = {
@@ -113,6 +116,7 @@ export function buildDocumentRequestPayload(
 async function pdfForRecord(
   workflow: Workflow,
   recordKey: string,
+  worksheetNo: string,
   presetMethod?: string,
   draft: Record<string, string> = {},
   regeneration?: BatchReplacement,
@@ -131,14 +135,14 @@ async function pdfForRecord(
     route,
     record,
     value.samples,
-    String(record.worksheetNo || record.docNo || recordKey),
+    worksheetNo,
     method,
     draft
   );
   const payload = document.data;
   const requestBody: Record<string, unknown> = {
     workflow: route,
-    worksheetNo: String(record.worksheetNo || record.docNo || recordKey),
+    worksheetNo,
     cvContext: workflow.id === 'cv'
       ? { samplingFamily: cvSamplingFamily(record), testMethod: method }
       : undefined,
@@ -158,7 +162,7 @@ async function pdfForRecord(
       : [];
     throw new BatchConflictError({
       recordKey,
-      worksheetNo: String(record.worksheetNo || record.docNo || recordKey),
+      worksheetNo,
       requestedPdfId: String(result.requestedPdfId || ''),
       existingPdfIds: Array.isArray(result.existingPdfIds) ? result.existingPdfIds.map(String) : [],
       changedFields: [...new Set<string>(changedFields)]
@@ -167,7 +171,13 @@ async function pdfForRecord(
   if (!response.ok) throw new Error(result.error || 'the server refused it');
   const file = await fetch(`/api/pdfs/${result.pdfId}/download`);
   if (!file.ok) throw new Error('the rendered file could not be read back');
-  return { bytes: await file.arrayBuffer(), route };
+  return {
+    bytes: await file.arrayBuffer(),
+    route,
+    pdfId: String(result.pdfId || ''),
+    backupStatus: result.backup?.status,
+    backupError: result.backup?.error
+  };
 }
 
 /**
@@ -193,7 +203,7 @@ export async function renderBatch(
     const item = items[index];
     onProgress({ done: index, total: items.length, current: item.worksheetNo });
     try {
-      const { bytes } = await pdfForRecord(workflow, item.recordKey, presetMethod, drafts[item.recordKey]);
+      const { bytes, pdfId, backupStatus, backupError } = await pdfForRecord(workflow, item.recordKey, item.worksheetNo, presetMethod, drafts[item.recordKey]);
       /* Load once here to learn the page count and to fail early on a
          corrupt file, rather than at merge time with the dialog already up. */
       const source = await PDFDocument.load(bytes);
@@ -201,7 +211,10 @@ export async function renderBatch(
         recordKey: item.recordKey,
         worksheetNo: item.worksheetNo,
         bytes,
-        pageCount: source.getPageCount()
+        pageCount: source.getPageCount(),
+        pdfId,
+        backupStatus,
+        backupError
       });
     } catch (reason) {
       if (reason instanceof BatchConflictError) {
@@ -227,7 +240,7 @@ export async function replaceBatchConflict(
   draft: Record<string, string>,
   conflict: BatchConflict,
 ): Promise<BatchPart> {
-  const { bytes } = await pdfForRecord(workflow, item.recordKey, presetMethod, draft, {
+  const { bytes, pdfId, backupStatus, backupError } = await pdfForRecord(workflow, item.recordKey, item.worksheetNo, presetMethod, draft, {
     requestedPdfId: conflict.requestedPdfId,
     existingPdfIds: conflict.existingPdfIds
   });
@@ -236,7 +249,10 @@ export async function replaceBatchConflict(
     recordKey: item.recordKey,
     worksheetNo: item.worksheetNo,
     bytes,
-    pageCount: source.getPageCount()
+    pageCount: source.getPageCount(),
+    pdfId,
+    backupStatus,
+    backupError
   };
 }
 

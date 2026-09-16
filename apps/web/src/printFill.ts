@@ -2,7 +2,7 @@ import type { Domain, WorkflowId } from './appData';
 
 export type PrintFillKey = `${Domain}:${WorkflowId}:${string}`;
 export type PrintFillValues = Record<string, string>;
-export type PrintableField = { key: string; label: string; isResult: boolean; editable: boolean };
+export type PrintableField = { key: string; label: string; isResult: boolean; editable: boolean; bulkSafe: boolean };
 
 const STORAGE_KEY = 'anf3.print-fill.v1';
 
@@ -48,6 +48,9 @@ export function mergePrintFill(payload: Record<string, string>, values: PrintFil
       if (Object.prototype.hasOwnProperty.call(payload, alias)) merged[alias] = merged[key];
     }
   });
+  /* Incubation No. is an operator-entered print value. It must start blank
+     even when an upstream record happens to carry an internal incNo value. */
+  if (allowed.has('incNo') && !Object.prototype.hasOwnProperty.call(values, 'incNo')) merged.incNo = '';
   return merged;
 }
 
@@ -55,7 +58,7 @@ export function blankPayloadKeys(payload: Record<string, string>) {
   return Object.keys(payload).filter((key) => payload[key] === '');
 }
 
-type FieldRule = { key: string; label: string; isResult?: boolean; editable?: boolean };
+type FieldRule = { key: string; label: string; isResult?: boolean; editable?: boolean; bulkSafe?: boolean };
 type SampleRule = { prefix: string; label: string; isResult?: boolean };
 type PrintSchema = { headers: FieldRule[]; samples: SampleRule[] };
 
@@ -81,42 +84,42 @@ const CONTACT_DATES: FieldRule[] = [
 
 const PW_HEADERS: FieldRule[] = [
   ...IDENTITY_HEADERS, ...COMMON_DATES,
-  { key: 'incNo', label: 'Incident number' }, { key: 'leftEM', label: 'Left EM' },
-  { key: 'rightEM', label: 'Right EM' }, { key: 'lotTSA', label: 'TSA lot' },
-  { key: 'lotPCA', label: 'PCA lot' }, { key: 'lotPlate', label: 'Plate lot' },
-  { key: 'lotPipette', label: 'Pipette lot' }, { key: 'negativeValue', label: 'Negative control', isResult: true },
+  { key: 'incNo', label: 'Incubation No.' }, { key: 'leftEM', label: 'Left EM' },
+  { key: 'rightEM', label: 'Right EM' }, { key: 'lotTSA', label: 'TSA lot', bulkSafe: true },
+  { key: 'lotPCA', label: 'PCA lot', bulkSafe: true }, { key: 'lotPlate', label: 'Plate lot', bulkSafe: true },
+  { key: 'lotPipette', label: 'Pipette lot', bulkSafe: true }, { key: 'negativeValue', label: 'Negative control', isResult: true },
   { key: 'temp', label: 'Room temperature' }, { key: 'comment', label: 'Comment' }
 ];
 
 const WFI_HEADERS: FieldRule[] = [
   ...IDENTITY_HEADERS, ...COMMON_DATES,
-  { key: 'incNo', label: 'Incident number' }, { key: 'leftEm', label: 'Left EM' },
+  { key: 'incNo', label: 'Incubation No.' }, { key: 'leftEm', label: 'Left EM' },
   { key: 'rightEm', label: 'Right EM' }, { key: 'leftHand', label: 'Left hand' },
-  { key: 'rightHand', label: 'Right hand' }, { key: 'lotTSA', label: 'TSA lot' },
-  { key: 'lotBuffer', label: 'Buffer lot' }, { key: 'lotForceps', label: 'Forceps lot' },
-  { key: 'lotMembrane', label: 'Membrane lot' }, { key: 'negativeValue', label: 'Negative control', isResult: true },
+  { key: 'rightHand', label: 'Right hand' }, { key: 'lotTSA', label: 'TSA lot', bulkSafe: true },
+  { key: 'lotBuffer', label: 'Buffer lot', bulkSafe: true }, { key: 'lotForceps', label: 'Forceps lot', bulkSafe: true },
+  { key: 'lotMembrane', label: 'Membrane lot', bulkSafe: true }, { key: 'negativeValue', label: 'Negative control', isResult: true },
   { key: 'temp', label: 'Room temperature' }, { key: 'comment', label: 'Comment' }
 ];
 
 const EM_HEADERS: FieldRule[] = [
   ...IDENTITY_HEADERS, ...COMMON_DATES,
-  { key: 'incNo', label: 'Incident number' }, { key: 'floor', label: 'Floor' },
-  { key: 'temp', label: 'Room temperature' }, { key: 'lotMedia', label: 'Media lot' },
-  { key: 'mfgMedia', label: 'Media manufacture date' }, { key: 'expMedia', label: 'Media expiry date' }
+  { key: 'incNo', label: 'Incubation No.' }, { key: 'floor', label: 'Floor' },
+  { key: 'temp', label: 'Room temperature' }, { key: 'lotMedia', label: 'Media lot', bulkSafe: true },
+  { key: 'mfgMedia', label: 'Media manufacture date', bulkSafe: true }, { key: 'expMedia', label: 'Media expiry date', bulkSafe: true }
 ];
 
 const CA_HEADERS: FieldRule[] = [
   ...IDENTITY_HEADERS, ...COMMON_DATES,
-  { key: 'incNo', label: 'Incident number' }, { key: 'tempRoom01', label: 'Room temperature' },
-  { key: 'lotTSA', label: 'TSA lot' }, { key: 'mfgMedia', label: 'Media manufacture date' },
-  { key: 'expMedia', label: 'Media expiry date' }, { key: 'lotOther', label: 'Other lot' }
+  { key: 'incNo', label: 'Incubation No.' }, { key: 'tempRoom01', label: 'Room temperature' },
+  { key: 'lotTSA', label: 'TSA lot', bulkSafe: true }, { key: 'mfgMedia', label: 'Media manufacture date', bulkSafe: true },
+  { key: 'expMedia', label: 'Media expiry date', bulkSafe: true }, { key: 'lotOther', label: 'Other lot', bulkSafe: true }
 ];
 
 const CONTACT_HEADERS: FieldRule[] = [
   ...IDENTITY_HEADERS, { key: 'productName', label: 'Product' }, ...CONTACT_DATES,
   { key: 'sectionName', label: 'Section' }, { key: 'samplingTime', label: 'Sampling time' },
-  { key: 'lotContact', label: 'Contact lot' }, { key: 'lotTSA', label: 'TSA lot' },
-  { key: 'lotNo', label: 'Media lot' }, { key: 'gradeControl', label: 'Grade control' }
+  { key: 'lotContact', label: 'Contact lot', bulkSafe: true }, { key: 'lotTSA', label: 'TSA lot', bulkSafe: true },
+  { key: 'lotNo', label: 'Media lot', bulkSafe: true }, { key: 'gradeControl', label: 'Grade control' }
 ];
 
 const WATER_SAMPLES: SampleRule[] = [
@@ -192,7 +195,7 @@ export function printableFields(payload: Record<string, string>, route?: string)
     if (seen.has(field.label) || !Object.prototype.hasOwnProperty.call(payload, field.key)) continue;
     seen.add(field.label);
     emittedKeys.add(field.key);
-    fields.push({ key: field.key, label: field.label, isResult: Boolean(field.isResult), editable: field.editable !== false });
+    fields.push({ key: field.key, label: field.label, isResult: Boolean(field.isResult), editable: field.editable !== false, bulkSafe: Boolean(field.bulkSafe) });
   }
   for (const rule of schema.samples) {
     const escaped = rule.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -202,10 +205,22 @@ export function printableFields(payload: Record<string, string>, route?: string)
     for (const key of keys) {
       if (emittedKeys.has(key)) continue;
       emittedKeys.add(key);
-      fields.push({ key, label: `${rule.label} ${key.slice(rule.prefix.length)}`, isResult: Boolean(rule.isResult), editable: true });
+      fields.push({ key, label: `${rule.label} ${key.slice(rule.prefix.length)}`, isResult: Boolean(rule.isResult), editable: true, bulkSafe: false });
     }
   }
   return fields;
+}
+
+/** Drafts begin with System DB values except for operator-entered fields. */
+export function initialPrintFillValue(field: PrintableField, payload: Record<string, string>, saved: PrintFillValues = {}) {
+  if (Object.prototype.hasOwnProperty.call(saved, field.key)) return saved[field.key] || '';
+  if (field.key === 'incNo') return '';
+  return payload[field.key] || '';
+}
+
+/** Only route-owned, explicitly bulk-safe header fields are eligible. */
+export function bulkSafeFields(payload: Record<string, string>, route?: string) {
+  return printableFields(payload, route).filter((field) => field.editable && field.bulkSafe && !field.isResult);
 }
 
 const CONFLICT_LABELS: Record<string, string> = {

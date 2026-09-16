@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { documentPages, documentPayload, templateSampleCapacity } from './documentPayload';
 
 describe('documentPayload', () => {
+  it('keeps Incubation No. blank even when System DB carries an internal value', () => {
+    const payload = documentPayload('pw-prw', { incNo: 'INC-SYSTEM-DO-NOT-USE' }, [], 'WP-26-0001');
+    expect(payload.incNo).toBe('');
+  });
+
   it('maps WFI result and legacy membrane aliases', () => {
     const payload = documentPayload('wfi-pus', { worksheetNo: 'WP-26-0001', lotPMembrane: 'M-1' }, [{ samplingPoint: 'P1', result: 3 }], 'WP-26-0001');
     expect(payload.lotMembrane).toBe('M-1');
     expect(payload.samplingPoint01).toBe('P1');
     expect(payload.result01).toBe('3');
+  });
+
+  it('uses the queued worksheet identity when a cached record is stale', () => {
+    const payload = documentPayload('pw-prw', { docNo: 'OLD-IDENTITY', worksheetNo: 'OLD-IDENTITY-2' }, [], 'WT-26-B10-0042');
+    expect(payload.docNo).toBe('WT-26-B10-0042');
   });
 
   it('uses record temperature only for CA tempRoom01', () => {
@@ -131,6 +141,47 @@ describe('a zero count survives the alias chain', () => {
   it('still falls back to the aliases when the result is genuinely absent', () => {
     expect(documentPayload('cleaning-validation-contact', {}, [{ resultDisplay: 'TNTC' }], 'C').result01).toBe('TNTC');
     expect(documentPayload('cleaning-validation-contact', {}, [{}], 'C').result01).toBe('');
+  });
+});
+
+describe('normalized CV System DB records keep source-shaped mappings', () => {
+  const sourceRecord = {
+    worksheetNo: 'CVR-26-B16-0042',
+    sampleMatrix: 'Rinse-PW',
+    samplingFamily: 'rinse',
+    testMethod: 'MEMBRANE_FILTRATION',
+    productName: 'Source-shaped fixture only'
+  };
+
+  it('routes by Test-Method and preserves membrane result/tag fields', () => {
+    const sourceSamples = [{ location: 'Filling tube-1', tagNo: 'TAG-042', resultDisplay: '7' }];
+    const payload = documentPayload(
+      'cleaning-validation-rinse-membrane',
+      sourceRecord,
+      sourceSamples,
+      sourceRecord.worksheetNo,
+      'membrane-filtration'
+    );
+
+    expect(payload.docNo).toBe(sourceRecord.worksheetNo);
+    expect(payload.tagNo01).toBe('TAG-042');
+    expect(payload.samplingPoint01).toBe('');
+    expect(payload.result01).toBe('7');
+    expect(payload.resultAvg01).toBeUndefined();
+  });
+
+  it('maps a source Result display to the CV Pour average without replicates', () => {
+    const payload = documentPayload(
+      'cleaning-validation-rinse-pour',
+      { ...sourceRecord, testMethod: 'POUR_PLATE' },
+      [{ location: 'Filling tube-1', resultDisplay: 'TNTC' }],
+      sourceRecord.worksheetNo,
+      'pour-plate'
+    );
+
+    expect(payload.result101).toBe('');
+    expect(payload.result201).toBe('');
+    expect(payload.resultAvg01).toBe('TNTC');
   });
 });
 

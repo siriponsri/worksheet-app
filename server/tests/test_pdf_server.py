@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 import zipfile
@@ -86,6 +87,99 @@ def test_pdf_id_lifecycle_and_content_template_cache(client, monkeypatch):
     assert conflict.status_code == 409
     overwrite = client.post(f"/api/pdfs/{created['pdfId']}/save-desktop", json={'overwrite': True})
     assert overwrite.status_code == 200
+
+
+def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, monkeypatch):
+    share = tmp_path / 'project-share'
+    spool = tmp_path / 'pending'
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
+    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0090', 'data': {'analyst': 'A'}}
+
+    first = client.post('/api/pdfs', json=payload)
+    assert first.status_code == 201
+    body = first.get_json()
+    assert body['backup']['status'] == 'succeeded'
+    pdf_id = body['pdfId']
+    share_pdf = share / 'pdfs' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.pdf'
+    share_word = share / 'words' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.docx'
+    share_manifest = share / 'manifests' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.json'
+    assert share_pdf.stat().st_size > 0
+    assert share_word.stat().st_size > 0
+    assert share_manifest.is_file()
+
+    second = client.post('/api/pdfs', json=payload)
+    assert second.status_code == 200
+    assert second.get_json()['backup']['status'] == 'succeeded'
+    assert not list(spool.glob('*.json'))
+
+
+def test_project_share_replacement_keeps_old_version_in_history(client, tmp_path, monkeypatch):
+    share = tmp_path / 'project-share'
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    initial = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0093', 'data': {'analyst': 'A'}}
+    first = client.post('/api/pdfs', json=initial)
+    assert first.status_code == 201
+    old_pdf_id = first.get_json()['pdfId']
+
+    changed = {**initial, 'data': {'analyst': 'B'}}
+    conflict = client.post('/api/pdfs', json=changed).get_json()
+    replacement = client.post('/api/pdfs', json={**changed, 'regeneration': {
+        'mode': 'replace', 'requestedPdfId': conflict['requestedPdfId'],
+        'existingPdfIds': conflict['existingPdfIds']
+    }})
+    assert replacement.status_code == 201
+    assert replacement.get_json()['backup']['status'] == 'succeeded'
+    history = share / 'history' / 'pw-prw' / 'PW-26-0093' / old_pdf_id
+    assert (history / 'PW-26-0093.json').is_file()
+    assert (share / 'pdfs' / 'pw-prw' / 'PW-26-0093' / 'PW-26-0093.pdf').is_file()
+
+
+def test_project_share_outage_keeps_local_artifacts_and_retry_recovers(client, tmp_path, monkeypatch):
+    blocked = tmp_path / 'share-is-a-file'
+    blocked.write_text('unavailable', encoding='utf-8')
+    share = tmp_path / 'project-share'
+    spool = tmp_path / 'pending'
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(blocked))
+    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0091', 'data': {'analyst': 'A'}}
+
+    created = client.post('/api/pdfs', json=payload)
+    assert created.status_code == 201
+    body = created.get_json()
+    assert body['backup']['status'] == 'pending'
+    pdf_id = body['pdfId']
+    assert client.get(f'/api/pdfs/{pdf_id}').status_code == 200
+    assert (spool / f'{pdf_id}.json').is_file()
+
+    blocked.unlink()
+    share.mkdir()
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
+    retry = client.post(f'/api/pdfs/{pdf_id}/backup-retry')
+    assert retry.status_code == 200
+    assert retry.get_json()['status'] == 'succeeded'
+    assert not (spool / f'{pdf_id}.json').exists()
+
+
+def test_project_share_different_destination_content_stays_pending(client, tmp_path, monkeypatch):
+    share = tmp_path / 'project-share'
+    spool = tmp_path / 'pending'
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
+    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0092', 'data': {'analyst': 'A'}}
+    created = client.post('/api/pdfs', json=payload).get_json()
+    pdf_id = created['pdfId']
+    destination = share / 'pdfs' / 'pw-prw' / 'PW-26-0092' / 'PW-26-0092.pdf'
+    destination.write_bytes(b'%PDF-1.4 different\n%%EOF\n')
+
+    cached = client.post('/api/pdfs', json=payload)
+    assert cached.status_code == 200
+    assert cached.get_json()['backup']['status'] == 'pending'
+    assert (spool / f'{pdf_id}.json').is_file()
 
 
 def test_rejects_unknown_workflow_paths_and_validates_cv_routes(client):
@@ -538,3 +632,45 @@ def test_real_multipage_template_is_valid_docx(tmp_path):
     root = ET.fromstring(document_xml)
     assert len(root.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sectPr')) >= 2
     assert document_xml.count(b'AT-26-QA-0001') >= 2
+
+
+def test_compressed_air_multipage_vml_ids_are_unique(tmp_path):
+    output = tmp_path / 'ca-multipage.docx'
+    template = Path(pdf_server.BASE_DIR) / 'templates' / 'ca-template.docx'
+    pdf_server.build_multipage_docx(
+        str(template),
+        str(output),
+        [
+            {'docNo': 'AC-26-B12-0001', 'building': 'B12', 'samplingDate': '01 Sep 2026'},
+            {'docNo': 'AC-26-B12-0001', 'building': 'B12', 'samplingDate': '01 Sep 2026'},
+        ],
+    )
+
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read('word/document.xml').decode('utf-8')
+    with zipfile.ZipFile(template) as archive:
+        template_xml = archive.read('word/document.xml').decode('utf-8')
+
+    page_break = '<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/>'
+    pages = document_xml.split(page_break)
+    assert len(pages) == 2
+    page_one, page_two = pages
+
+    vml_id_pattern = r'(?:(?:o:spid|id)="(_x0000_[sit]\d+(?:_p\d+)?)")'
+    page_one_ids = re.findall(vml_id_pattern, page_one)
+    page_two_ids = re.findall(vml_id_pattern, page_two)
+    template_ids = re.findall(vml_id_pattern, template_xml)
+    assert page_one_ids == template_ids
+    assert page_one_ids
+    assert all(not value.endswith(('_p1', '_p2')) for value in page_one_ids)
+    assert page_two_ids
+    assert all(value.endswith('_p2') for value in page_two_ids)
+    assert set(page_one_ids).isdisjoint(page_two_ids)
+
+    docpr_ids = re.findall(r'<wp:docPr\b[^>]*\bid="([0-9]+)"', document_xml)
+    assert len(docpr_ids) == len(set(docpr_ids))
+
+    page_two_types = set(re.findall(r'type="#(_x0000_t\d+_p2)"', page_two))
+    page_two_shapetypes = set(re.findall(r'<v:shapetype[^>]+id="(_x0000_t\d+_p2)"', page_two))
+    assert page_two_types
+    assert page_two_types == page_two_shapetypes

@@ -112,12 +112,19 @@ export function templateSampleCapacity(workflow: string) {
 
 function header(record: RecordData, worksheetNo: string) {
   return {
-    docNo: text(record.docNo || record.worksheetNo || worksheetNo), building: text(record.building),
+    /* The queued worksheet identity is authoritative. A stale cached record
+       must not put a different header number into a document named for the
+       queue item. */
+    docNo: text(worksheetNo), building: text(record.building),
     ProductName: text(record.productName || record.ProductName),
     productName: text(record.productName || record.ProductName),
     samplingDate: date(record.samplingDate), performedDate: date(record.performedDate),
     determinedDate: date(record.determinedDate), concludedDate: date(record.concludedDate), approvedDate: date(record.approvedDate),
-    temp: text(record.temp), incNo: text(record.incNo), comment: text(record.comment),
+    temp: text(record.temp),
+    /* Incubation No. is a print-time operator field. It must never inherit an
+       internal value from the read-only System DB record; an explicit local
+       draft is merged later by printFill.ts. */
+    incNo: '', comment: text(record.comment),
     /* The control plate on a Cleaning Validation Contact worksheet. Missing
        here until now, which printed the literal text `<gradeControl>` on every
        one of them: the server only substitutes keys it is sent, so a key that

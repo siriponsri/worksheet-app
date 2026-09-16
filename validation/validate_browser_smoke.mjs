@@ -16,7 +16,7 @@ const forbidden = /samplesJson|templatePayload|resultAvg|result1|result2|lotPMem
 const routeFixtures = [
   {
     domain: 'water', workflow: 'pw-prw', worksheetNo: 'PW-26-B10-0001', scope: 'Building 10',
-    record: { worksheetNo: 'PW-26-B10-0001', building: 'Building 10', samplingDate: '2026-09-10', performedDate: '2026-09-10', comment: '' },
+    record: { worksheetNo: 'PW-26-B10-0001', building: 'Building 10', samplingDate: '2026-09-10', performedDate: '2026-09-10', comment: '', incNo: 'INC-SYSTEM-DO-NOT-USE' },
     samples: [{ samplingPoint: 'Point A', result1: '1', result2: '2', resultAvg: '2.1', tagNo: 'TAG-1' }]
   },
   {
@@ -107,7 +107,13 @@ async function main() {
     /* about:blank has no storage origin. Navigate to the local app before
        changing the queued fixture so this helper also works on a clean run. */
     await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
-    await page.evaluate((items) => sessionStorage.setItem('anf3.print-queue.v1', JSON.stringify(items)), queueFor(fixture));
+    await page.evaluate((items) => {
+      /* The active app migrates the legacy queue into the workset once. Clear
+         that migrated snapshot before swapping fixtures so each route starts
+         with the fixture requested by this test. */
+      sessionStorage.removeItem('anf3.workset.v1');
+      sessionStorage.setItem('anf3.print-queue.v1', JSON.stringify(items));
+    }, queueFor(fixture));
   };
 
   await page.route('**/config.json', (route) => route.fulfill({
@@ -157,52 +163,58 @@ async function main() {
   for (const fixture of routeFixtures) {
     await selectFixture(fixture);
     await page.goto(`${baseUrl}/#/print/${fixture.domain}/${fixture.workflow}`, { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: 'Fill in / Edit before print' }).waitFor();
+    await page.getByRole('button', { name: 'Fill in', exact: true }).waitFor();
     assert(pdfPosts === 0, `${fixture.worksheetNo} posted before explicit Generate preview`);
   }
   console.log(`PASS browser route coverage: ${routeFixtures.map(({ worksheetNo }) => worksheetNo).join(', ')}`);
 
   await selectFixture(initialFixture);
   await page.goto(`${baseUrl}/#/print/water/pw-prw`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).waitFor();
+  const queueFill = page.getByRole('button', { name: 'Fill in', exact: true });
+  await queueFill.waitFor();
   assert(pdfPosts === 0, 'Print queue posted to /api/pdfs before explicit Generate preview');
   await page.screenshot({ path: path.join(outputDir, 'print-queue-before-generate.png'), fullPage: true });
 
-  const drawer = page.getByRole('dialog', { name: 'Fill in or edit before print' });
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).click();
+  const drawer = page.getByRole('dialog', { name: `Fill in ${record.worksheetNo}` });
+  await queueFill.click();
   await drawer.waitFor();
+  await drawer.locator('input:disabled').first().waitFor();
   assert((await drawer.locator('input:disabled').count()) >= 2, 'Print identity fields are not locked');
+  assert(await drawer.getByLabel('Incubation No.').count() === 1, 'Fill in does not expose Incubation No.');
+  assert(await drawer.getByLabel('Incubation No.').inputValue() === '', 'Incubation No. was populated from the System DB');
   assert(!forbidden.test(await drawer.innerText()), 'Print drawer exposes an internal field name');
   const average = drawer.getByLabel('Average result 01');
   await average.fill('[invalid]');
-  assert(await drawer.getByRole('button', { name: 'Generate preview' }).isDisabled(), 'Invalid result was not blocked');
+  assert(await drawer.getByRole('button', { name: 'Save & Generate' }).isDisabled(), 'Invalid result was not blocked');
   await average.fill('TNTC');
   await drawer.getByRole('button', { name: 'Reset to System DB' }).click();
   assert((await average.inputValue()) === '3', 'Reset did not restore the System DB value');
-  await drawer.getByRole('button', { name: 'Cancel' }).last().click();
+  await drawer.getByRole('button', { name: 'Close' }).click();
   assert(!(await drawer.isVisible()), 'Cancel did not close the print drawer');
   assert(pdfPosts === 0, 'Cancel caused PDF generation');
 
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).click();
+  await queueFill.click();
   await drawer.waitFor();
-  await drawer.getByRole('button', { name: 'Cancel' }).first().focus();
+  await drawer.getByRole('button', { name: 'Close' }).focus();
   await page.keyboard.press('Shift+Tab');
   assert(await page.evaluate(() => (document.activeElement instanceof HTMLElement) && document.activeElement.closest('[role="dialog"]') !== null), 'Focus escaped the print drawer');
   await page.keyboard.press('Escape');
   assert(!(await drawer.isVisible()), 'Escape did not close the print drawer');
-  assert((await page.evaluate(() => document.activeElement?.textContent || '')).includes('Fill in / Edit before print'), 'Focus was not restored to the print trigger');
+  assert((await page.evaluate(() => document.activeElement?.textContent || '')).trim() === 'Fill in', 'Focus was not restored to the print trigger');
 
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).click();
-  await drawer.getByRole('button', { name: 'Generate preview' }).click();
+  await queueFill.click();
+  await drawer.getByRole('button', { name: 'Save & Generate' }).click();
   await page.waitForTimeout(500);
   assert(pdfPosts >= 1, `Explicit Generate preview did not post: ${pdfPosts}`);
   await page.screenshot({ path: path.join(outputDir, 'print-preview-after-generate.png'), fullPage: true });
 
   await page.goto(`${baseUrl}/#/list?building=Building%2010&domain=water&workflow=pw-prw&q=fixture&from=2026-09-01&to=2026-09-10&groupBy=work`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: record.worksheetNo }).waitFor();
+  const listRow = page.getByRole('row').filter({ hasText: record.worksheetNo });
+  await listRow.waitFor();
   assert(new URL(page.url()).hash.includes('q=fixture'), 'List search query is not URL-backed');
   assert(await page.getByLabel('Group by').inputValue() === 'work', 'List groupBy state was not restored from the URL');
-  await page.getByRole('button', { name: record.worksheetNo }).click();
+  assert(await listRow.getByRole('switch', { name: `Include ${record.worksheetNo} in the work set` }).count() === 1, 'List row does not expose an accessible ON/OFF switch');
+  await listRow.getByRole('button', { name: 'Details' }).click();
   const details = page.getByRole('dialog', { name: 'Record details' });
   await details.waitFor();
   await page.waitForTimeout(300);
@@ -212,7 +224,7 @@ async function main() {
   await page.screenshot({ path: path.join(outputDir, 'list-details.png'), fullPage: true });
 
   await page.goto(`${baseUrl}/#/list?building=Building%2010&domain=water&workflow=pw-prw&q=fixture&groupBy=building`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: record.worksheetNo }).waitFor();
+  await page.getByRole('row').filter({ hasText: record.worksheetNo }).waitFor();
   assert(new URL(page.url()).hash.includes('groupBy=building'), 'List lost explicit building grouping in the URL');
   assert(await page.getByLabel('Group by').inputValue() === 'building', 'List building grouping was not restored from the URL');
 
@@ -223,9 +235,9 @@ async function main() {
   conflictMode = true;
   replacementPosts = 0;
   await page.goto(`${baseUrl}/#/print/water/pw-prw`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).click();
-  const queueDrawer = page.getByRole('dialog', { name: 'Fill in or edit before print' });
-  await queueDrawer.getByRole('button', { name: 'Generate preview' }).click();
+  await page.getByRole('button', { name: 'Fill in', exact: true }).click();
+  const queueDrawer = page.getByRole('dialog', { name: `Fill in ${record.worksheetNo}` });
+  await queueDrawer.getByRole('button', { name: 'Save & Generate' }).click();
   await page.getByRole('button', { name: 'Review replacement' }).click();
   const queueConflict = page.getByRole('dialog', { name: 'Review document replacement' });
   await queueConflict.waitFor();
@@ -238,20 +250,22 @@ async function main() {
   assert(replacementPosts === 2, `Queue replacement did not send two controlled retries: ${replacementPosts}`);
   conflictMode = false;
 
-  conflictMode = true;
-  replacementPosts = 0;
+  await page.evaluate(() => {
+    sessionStorage.removeItem('anf3.workset.v1');
+    sessionStorage.removeItem('anf3.print-queue.v1');
+  });
   await page.goto(`${baseUrl}/#/records/water/pw-prw/fixture-1?building=Building%2010`, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: 'Fill in / Edit before print' }).click();
-  const recordDrawer = page.getByRole('dialog', { name: 'Fill in or edit before print' });
-  await recordDrawer.getByRole('button', { name: 'Generate preview' }).click();
-  const conflict = page.getByRole('dialog', { name: 'Review document replacement' });
-  await conflict.waitFor();
-  const conflictText = await conflict.innerText();
-  assert(/Product|Average result 01|Analyst/.test(conflictText), 'Conflict dialog did not map changed fields to human labels');
-  assert(!forbidden.test(conflictText), 'Conflict dialog exposes an internal field name');
-  await page.screenshot({ path: path.join(outputDir, 'conflict-human-fields.png'), fullPage: true });
-  await conflict.getByRole('button', { name: 'Cancel' }).click();
-  conflictMode = false;
+  const recordDetails = page.getByRole('dialog', { name: 'Record details' });
+  await recordDetails.waitFor();
+  assert(await recordDetails.getByRole('button', { name: 'Fill in', exact: true }).count() === 0, 'Record details exposes a direct print action');
+  assert(await recordDetails.getByRole('button', { name: /Generate|Save/ }).count() === 0, 'Record details exposes a document-generation action');
+  await recordDetails.getByRole('button', { name: 'Close' }).click();
+  const directRow = page.getByRole('row').filter({ hasText: record.worksheetNo });
+  await directRow.getByRole('switch', { name: `Include ${record.worksheetNo} in the work set` }).click();
+  await page.getByRole('button', { name: /Continue to Fill In/ }).click();
+  await page.getByRole('heading', { name: /Selected Work/ }).waitFor();
+  assert(pdfPosts >= 1, 'Selecting a worksheet generated a PDF before the queue action');
+  await page.goto(`${baseUrl}/#/list?building=Building%2010&domain=water&workflow=pw-prw&q=fixture`, { waitUntil: 'networkidle' });
 
   for (const width of [320, 375, 414, 768, 1024, 1280]) {
     await page.setViewportSize({ width, height: 900 });

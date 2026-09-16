@@ -101,6 +101,10 @@
   --color-ok: oklch(48% 0.124 152);
   --color-warn: oklch(50% 0.106 70);
   --color-danger: oklch(48% 0.180 27);
+  --color-switch-track: oklch(72% 0.012 82);
+  --color-switch-track-on: oklch(48% 0.124 152);
+  --color-switch-thumb: oklch(99% 0.004 92);
+  --color-command-bar: oklch(94% 0.008 88);
 
 
   /* --- the instrument panel (v7.1q) ------------------------------------
@@ -211,6 +215,10 @@
   --color-ok: oklch(80% 0.150 158);
   --color-warn: oklch(84% 0.140 84);
   --color-danger: oklch(72% 0.169 28);
+  --color-switch-track: oklch(45% 0.012 78);
+  --color-switch-track-on: oklch(72% 0.150 158);
+  --color-switch-thumb: oklch(16% 0.010 78);
+  --color-command-bar: oklch(22% 0.011 78);
 
   /* The instrument panel with the lamp off: a well is *lighter* than the
      panel here, because a lit readout on a dark instrument is what you see. */

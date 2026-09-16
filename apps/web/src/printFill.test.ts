@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { blankPayloadKeys, mergePrintFill, printFieldLabel, printableFields } from './printFill';
+import { blankPayloadKeys, bulkSafeFields, initialPrintFillValue, mergePrintFill, printFieldLabel, printableFields } from './printFill';
 
 describe('print fill contract', () => {
   it('accepts editable canonical payload keys without changing System DB data', () => {
@@ -33,6 +33,21 @@ describe('print fill contract', () => {
     expect(printFieldLabel('ProductName', fields)).toBe('Product');
     expect(printFieldLabel('analyst', fields)).toBe('Analyst');
     expect(printFieldLabel('templatePayload', fields)).toBe('Other reviewed values');
+  });
+
+  it('shows Incubation No. blank until the operator supplies a print draft', () => {
+    const payload = { docNo: 'PW-26-0001', building: 'Building 10', incNo: 'system-value' };
+    const field = printableFields(payload, 'pw-prw').find((entry) => entry.key === 'incNo')!;
+    expect(field.label).toBe('Incubation No.');
+    expect(initialPrintFillValue(field, payload)).toBe('');
+    expect(initialPrintFillValue(field, payload, { incNo: 'INC-01' })).toBe('INC-01');
+    expect(mergePrintFill(payload, {}, 'pw-prw').incNo).toBe('');
+    expect(mergePrintFill(payload, { incNo: 'INC-01' }, 'pw-prw').incNo).toBe('INC-01');
+  });
+
+  it('keeps batch-safe fields explicitly allowlisted', () => {
+    const payload = { docNo: 'PW-26-0001', building: 'Building 10', incNo: '', lotTSA: '', resultAvg01: '', samplingPoint01: '' };
+    expect(bulkSafeFields(payload, 'pw-prw').map((field) => field.key)).toEqual(['lotTSA']);
   });
 
   it('keeps every controlled route on its own human presentation schema', () => {

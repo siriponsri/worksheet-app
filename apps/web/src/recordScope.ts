@@ -91,3 +91,17 @@ export function itemInRecordScope(item: SearchItem, filters: ScopeFilters) {
 export function filterRecordScope(items: SearchItem[], filters: ScopeFilters) {
   return items.filter((item) => itemInRecordScope(item, filters));
 }
+
+/** Apply the refinement filters locally when a cached scope is read offline. */
+export function filterRecordList(items: SearchItem[], filters: Pick<RecordFilters, 'q' | 'from' | 'to'>) {
+  const query = String(filters.q || '').trim().toLowerCase();
+  return items.filter((item) => {
+    const haystack = [item.worksheetNo, item.recordId, item.docNo, item.building, item.samplingDate,
+      item.performedDate, item.samplingPoints, item.productName, item.sampleMatrix, item.testMethod,
+      item.recordStatus, item.reviewStatus].filter(Boolean).join(' ').toLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    if (filters.from && String(item.samplingDate || '') < filters.from) return false;
+    if (filters.to && String(item.samplingDate || '') > filters.to) return false;
+    return true;
+  });
+}

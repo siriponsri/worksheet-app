@@ -36,6 +36,14 @@ ROUTES = [
     }),
 ]
 
+# Keep fixture worksheet identities valid while allowing repeated local runs
+# after a template or payload change. The server must continue to reject a
+# different document under an existing worksheet identity; each validation
+# run simply uses its own reserved numeric fixture suffix.
+ARTIFACT_RUN = os.environ.get("ANF3_ARTIFACT_RUN", "9001").strip()
+if not re.fullmatch(r"\d{4}", ARTIFACT_RUN):
+    raise ValueError("ANF3_ARTIFACT_RUN must be exactly four digits")
+
 EXPECTED_PAGES = {
     "pw-prw": 1,
     "wfi-pus": 1,
@@ -93,14 +101,14 @@ def docx_text(path: Path) -> str:
 
 
 def fixture_data(names: set[str], route: str, worksheet: str, page: int = 0) -> dict[str, str]:
-    marker = f"QA-{route}-P{page or 1}"
+    marker = f"QA-{route[:3].upper()}-P{page or 1}"
     data = {name: f"{marker}-FIELD-{index:02d}" for index, name in enumerate(sorted(names), 1)}
     data.update({
         "docNo": worksheet,
         "building": "QA fixture building",
         "samplingDate": "01 Sep 2026",
         "performedDate": "01 Sep 2026",
-        "samplingPoint01": f"{marker}-POINT-01",
+        "samplingPoint01": f"{marker}-PT01",
         "samplingTime": "QA-09:10",
         "sampleCount": str(51 if EXPECTED_PAGES[route] > 1 else 1),
     })
@@ -114,7 +122,7 @@ def page_fixture_data(names: set[str], route: str, worksheet: str, page: int) ->
     for name in names:
         for prefix in SAMPLE_PREFIXES[route]:
             if re.fullmatch(re.escape(prefix) + r"\d{2}", name):
-                data[name] = f"QA-{route}-P{page}-S{name[-2:]}"
+                data[name] = f"QA-{route[:3].upper()}-P{page}-S{name[-2:]}"
                 break
     return data
 
@@ -167,7 +175,8 @@ def request_json(path: str, payload: dict) -> dict:
 def main() -> int:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     reports = []
-    for route, worksheet, workflow, cv_context in ROUTES:
+    for route, worksheet_base, workflow, cv_context in ROUTES:
+        worksheet = f"{worksheet_base[:-4]}{ARTIFACT_RUN}"
         template_name = {
             "pw-prw": "pw-prw-template.docx", "wfi-pus": "wfi-pus-template.docx",
             "em-air": "em-template.docx", "compressed-air": "ca-template.docx",
