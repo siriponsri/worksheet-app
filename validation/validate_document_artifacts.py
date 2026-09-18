@@ -9,6 +9,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -198,12 +199,20 @@ def main() -> int:
 
         response = request_json("/api/pdfs", payload)
         pdf_id = str(response["pdfId"])
-        word_path = ROOT / "words" / workflow / f"{worksheet}.docx"
-        pdf_path = ROOT / "pdfs" / workflow / f"{pdf_id}.pdf"
-        if not word_path.is_file() or word_path.stat().st_size == 0:
-            raise RuntimeError(f"{route}: missing generated DOCX {word_path}")
-        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
-            raise RuntimeError(f"{route}: missing generated PDF {pdf_path}")
+        # Controlled artifacts are stored on the configured project share, not
+        # in the repository tree. Read them from the share and copy them into
+        # the local validation output directory for inspection.
+        share_root = Path(os.environ.get("ANF3_PROJECT_SHARE", ROOT)).resolve()
+        share_word = share_root / "words" / workflow / f"{worksheet}.docx"
+        share_pdf = share_root / "pdfs" / workflow / f"{worksheet}.pdf"
+        if not share_word.is_file() or share_word.stat().st_size == 0:
+            raise RuntimeError(f"{route}: missing generated DOCX on share {share_word}")
+        if not share_pdf.is_file() or share_pdf.stat().st_size == 0:
+            raise RuntimeError(f"{route}: missing generated PDF on share {share_pdf}")
+        word_path = ARTIFACT_DIR / f"{worksheet}.docx"
+        pdf_path = ARTIFACT_DIR / f"{worksheet}.pdf"
+        shutil.copy2(share_word, word_path)
+        shutil.copy2(share_pdf, pdf_path)
         remaining = unresolved(word_path)
         if remaining:
             raise RuntimeError(f"{route}: unresolved placeholders {remaining}")

@@ -12,13 +12,33 @@ rem ===========================================================================
 
 title ANF3 Laboratory Records
 set "APP_DIR=%~dp0"
+rem The directory this launcher lives in is the release master / project share.
+rem Pass it to the server so controlled documents and logs land on the share
+rem regardless of whether this PC later runs from a local copy.
+set "SHARE_ROOT=%~dp0"
 set "LOCAL_DIR=%LOCALAPPDATA%\ANF3-Laboratory-Records\"
 set "LOCK_HELD="
 set "FOUND="
 
 rem /here is an owner/developer escape hatch. It still uses the local copy;
 rem running the server from a UNC path would put the venv back on the share.
+rem Developer mode must explicitly name the durable shared storage root so the
+rem local repo is never silently treated as controlled storage.
 if /i "%~1"=="/here" (
+  if not defined ANF3_PROJECT_SHARE (
+    if "%~2"=="" (
+      echo.
+      echo [ERROR] /here developer mode requires ANF3_PROJECT_SHARE.
+      echo        Set it before running, or pass the share root as the second argument:
+      echo          set "ANF3_PROJECT_SHARE=\\server\ANF3\worksheet"
+      echo          START-ANF3.bat /here
+      echo        or:
+      echo          START-ANF3.bat /here "\\server\ANF3\worksheet"
+      pause
+      exit /b 1
+    )
+    set "ANF3_PROJECT_SHARE=%~2"
+  )
   set "APP_DIR=%LOCAL_DIR%"
   goto :run_here
 )
@@ -138,7 +158,12 @@ if not exist "%APP_DIR%.venv\Scripts\python.exe" (
 )
 
 echo.
+rem Normal and disconnected-share paths use the original release directory as
+rem the durable root. /here developer mode must have set ANF3_PROJECT_SHARE
+rem explicitly before reaching this point.
+if not defined ANF3_PROJECT_SHARE set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"
 echo [INFO] Starting the local ANF3 service...
+echo          Project share: %ANF3_PROJECT_SHARE%
 set "ANF3_NO_BROWSER=1"
 start "ANF3 Local Server" /min "%APP_DIR%START-SERVER.bat"
 set "ANF3_NO_BROWSER="

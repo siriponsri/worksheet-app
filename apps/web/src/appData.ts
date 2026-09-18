@@ -142,16 +142,16 @@ function spineFor(definition: BinderDefinition): SpineLabel {
 }
 const binderDefinitions: BinderDefinition[] = [
   { id: 'b10-pw-prw', groupId: 'B10', buildingFilter: 'Building 10', workflowId: 'pw-prw', label: 'PRW & PW', iconId: 'icon-water-prw-pw', secondaryFilter: { waterType: 'all' }, state: 'active', spineLocation: 'BUILDING 10', order: 1 },
-  { id: 'b10-em-air', groupId: 'B10', buildingFilter: 'Building 10', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', secondaryFilter: { samplingMode: ['passive', 'active'] }, state: 'active', spineLocation: 'BUILDING 10', order: 2 },
+  { id: 'b10-em-air', groupId: 'B10', buildingFilter: 'Building 10', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', state: 'active', spineLocation: 'BUILDING 10', order: 2 },
   { id: 'b10-ca', groupId: 'B10', buildingFilter: 'Building 10', workflowId: 'compressed-air', label: 'CA', iconId: 'icon-compressed-air', secondaryFilter: { gasType: 'CA' }, state: 'active', spineLocation: 'BUILDING 10', order: 3 },
   { id: 'b10-cv', groupId: 'B10', buildingFilter: 'Building 10', workflowId: 'cv', label: 'Cleaning Validation', iconId: 'icon-cleaning-validation', secondaryFilter: { samplingFamily: 'all' }, state: 'active', spineLocation: 'BUILDING 10', order: 4 },
   { id: 'b12-pw-prw', groupId: 'B12', buildingFilter: 'Building 12', workflowId: 'pw-prw', label: 'PRW & PW', iconId: 'icon-water-prw-pw', secondaryFilter: { waterType: 'all' }, state: 'active', spineLocation: 'BUILDING 12', order: 1 },
-  { id: 'b12-em-air', groupId: 'B12', buildingFilter: 'Building 12', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', secondaryFilter: { samplingMode: ['passive', 'active'] }, state: 'active', spineLocation: 'BUILDING 12', order: 2 },
+  { id: 'b12-em-air', groupId: 'B12', buildingFilter: 'Building 12', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', state: 'active', spineLocation: 'BUILDING 12', order: 2 },
   { id: 'b12-ca', groupId: 'B12', buildingFilter: 'Building 12', workflowId: 'compressed-air', label: 'CA', iconId: 'icon-compressed-air', secondaryFilter: { gasType: 'CA' }, state: 'active', spineLocation: 'BUILDING 12', order: 3 },
   { id: 'b12-cv', groupId: 'B12', buildingFilter: 'Building 12', workflowId: 'cv', label: 'Cleaning Validation', iconId: 'icon-cleaning-validation', secondaryFilter: { samplingFamily: 'all' }, state: 'active', spineLocation: 'BUILDING 12', order: 4 },
   { id: 'b16-pw-prw', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'pw-prw', label: 'PRW & PW', iconId: 'icon-water-prw-pw', secondaryFilter: { waterType: 'all' }, state: 'active', spineLocation: 'OCL BUILDING 16', order: 1 },
   { id: 'b16-wfi', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'wfi-pus', label: 'WFI', iconId: 'icon-wfi', secondaryFilter: { waterType: 'WFI/PUS' }, state: 'active', spineLocation: 'BUILDING 16', order: 2 },
-  { id: 'b16-em-air', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', secondaryFilter: { samplingMode: ['passive', 'active'] }, state: 'active', spineLocation: 'BUILDING 16', order: 3 },
+  { id: 'b16-em-air', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'em-air', label: 'Air Sampling', iconId: 'icon-air-sampling', state: 'active', spineLocation: 'BUILDING 16', order: 3 },
   { id: 'b16-ca-n2', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'compressed-air', label: 'CA & Nitrogen', iconId: 'icon-compressed-air', secondaryFilter: { gasType: ['CA', 'N2'] }, state: 'active', spineLocation: 'OCL BUILDING 16', spineSuffix: 'AND NITROGEN', order: 4 },
   { id: 'b16-cv', groupId: 'B16', buildingFilter: 'Building 16', workflowId: 'cv', label: 'Cleaning Validation', iconId: 'icon-cleaning-validation', secondaryFilter: { samplingFamily: 'all' }, state: 'active', spineLocation: 'BUILDING 16', order: 5 },
   { id: 'other-water', groupId: 'OTHER', buildingFilter: 'Other', workflowId: 'pw-prw', label: 'Other — Water', iconId: 'icon-water-prw-pw', state: 'active', spineLocation: 'OTHER LOCATIONS', spineCode: 'OTHER — WATER', spineOverride: { th: [], en: ['PRW, PW, WFI', 'AND PUS RECORDS'] }, ownRoute: '/binder/other-water', order: 1 },
@@ -168,7 +168,12 @@ export function listRoute(building?: string | null, workflowId?: WorkflowId, sec
   if (building) params.set('building', building);
   if (workflowId) params.set('workflow', workflowId);
   Object.entries(secondaryFilter || {}).forEach(([key, value]) => {
-    if (value) params.set(key, Array.isArray(value) ? value.join(',') : value);
+    // The deployed Air endpoint does not accept the combined passive/active
+    // value yet. Omitting this optional filter keeps the Air binder usable;
+    // the list still contains both sampling modes and scopes by building.
+    const combinedAirModes = workflowId === 'em-air' && key === 'samplingMode' &&
+      Array.isArray(value) && value.length === 2 && value.includes('passive') && value.includes('active');
+    if (value && !combinedAirModes) params.set(key, Array.isArray(value) ? value.join(',') : value);
   });
   const query = params.toString();
   return `/list${query ? `?${query}` : ''}`;

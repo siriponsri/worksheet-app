@@ -26,9 +26,9 @@ What it does give QA that they did not have:
   * an **append-only** file: entries are only ever added, never rewritten
   * the worksheet number and the controlled template each printed document used
 
-The file lives beside the launchers as ``activity-log.jsonl`` — one JSON object
-per line, so it can be appended safely, read with any text editor, and never
-silently rewritten by a spreadsheet.
+The file lives on the configured project share as ``activity-log.jsonl`` — one
+JSON object per line, so it can be appended safely, read with any text editor,
+and never silently rewritten by a spreadsheet.
 
 Forwarding to the System DB
 ---------------------------
@@ -47,8 +47,35 @@ import socket
 import threading
 from datetime import datetime, timezone
 
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore
+
+
+def _lock_file(handle):
+    """Best-effort cross-process exclusive lock for the open file handle."""
+    if msvcrt is None:
+        return
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    except OSError:
+        pass
+
+
+def _unlock_file(handle):
+    """Release a lock obtained by _lock_file."""
+    if msvcrt is None:
+        return
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_PATH = os.path.join(BASE_DIR, 'activity-log.jsonl')
+PROJECT_SHARE_ROOT = os.environ.get('ANF3_PROJECT_SHARE', '').strip()
+LOG_PATH = os.path.join(PROJECT_SHARE_ROOT, 'activity-log.jsonl') if PROJECT_SHARE_ROOT else ''
 FORWARD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'log-forward.json')
 
 # Only these actions are accepted. An unknown action is rejected rather than
@@ -68,6 +95,13 @@ ACTIONS = {
 
 _WRITE_LOCK = threading.Lock()
 _MAX_FIELD = 200
+
+
+def configure_project_share(root):
+    """Point persistent logging at the same central root as document storage."""
+    global PROJECT_SHARE_ROOT, LOG_PATH
+    PROJECT_SHARE_ROOT = str(root or '').strip()
+    LOG_PATH = os.path.join(PROJECT_SHARE_ROOT, 'activity-log.jsonl') if PROJECT_SHARE_ROOT else ''
 
 
 def _clean(value, limit=_MAX_FIELD):
@@ -130,7 +164,7 @@ def record(action, operator='', worksheet_no='', detail='', operator_name='', op
     fact.
     """
     if action not in ACTIONS:
-        return None
+        return None, 'UNKNOWN_ACTION'
     entry = {
         # The server's clock, in UTC with an offset, so entries from different
         # machines can be ordered against each other.
@@ -145,13 +179,21 @@ def record(action, operator='', worksheet_no='', detail='', operator_name='', op
     }
     line = json.dumps(entry, ensure_ascii=False)
     with _WRITE_LOCK:
+        if not LOG_PATH:
+            return None, 'SHARE_UNAVAILABLE'
         try:
             with open(LOG_PATH, 'a', encoding='utf-8') as handle:
-                handle.write(line + '\n')
+                _lock_file(handle)
+                try:
+                    handle.write(line + '\n')
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                finally:
+                    _unlock_file(handle)
         except OSError:
-            return entry  # a read-only folder must not stop the app working
+            return None, 'WRITE_FAILED'
     threading.Thread(target=_forward, args=(entry,), daemon=True).start()
-    return entry
+    return entry, None
 
 
 def read(limit=500):

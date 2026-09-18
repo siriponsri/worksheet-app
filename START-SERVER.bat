@@ -23,8 +23,30 @@ if not defined ENV_OK (
   echo.
 )
 
-if not exist "%APP_DIR%words" mkdir "%APP_DIR%words"
-if not exist "%APP_DIR%pdfs" mkdir "%APP_DIR%pdfs"
+rem Controlled Word/PDF files and the activity log belong on the central share.
+rem The server uses the OS temp directory only during DOCX-to-PDF conversion.
+rem START-ANF3.bat sets ANF3_PROJECT_SHARE to the share root before starting
+rem this script. Do not hard-code a drive letter here.
+if not defined ANF3_PROJECT_SHARE (
+  echo.
+  echo [ERROR] ANF3_PROJECT_SHARE is not set.
+  echo        Run START-ANF3.bat from the share release, or set
+  echo        ANF3_PROJECT_SHARE to the worksheet storage root first.
+  pause
+  exit /b 1
+)
+rem SHARE_ROOT from START-ANF3.bat already has a trailing backslash, so do
+rem not add another one when testing the directory.
+if not exist "%ANF3_PROJECT_SHARE%" (
+  echo.
+  echo [WARNING] The project share is not reachable:
+  echo          %ANF3_PROJECT_SHARE%
+  echo          Document generation and activity logging will be disabled.
+  echo          Reconnect the share and restart to restore full function.
+  echo.
+) else (
+  echo          Project share: %ANF3_PROJECT_SHARE%
+)
 
 echo.
 echo ============================================

@@ -15,11 +15,13 @@ import pdf_server
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     template_dir = tmp_path / 'templates'
-    words_dir = tmp_path / 'words'
-    pdfs_dir = tmp_path / 'pdfs'
+    cache_dir = tmp_path / 'cache'
+    words_dir = cache_dir / 'words'
+    pdfs_dir = cache_dir / 'pdfs'
+    share_dir = tmp_path / 'project-share'
     template_dir.mkdir()
-    words_dir.mkdir()
-    pdfs_dir.mkdir()
+    words_dir.mkdir(parents=True)
+    pdfs_dir.mkdir(parents=True)
     desktop_dir = tmp_path / 'home' / 'Desktop'
     desktop_dir.mkdir(parents=True)
     for template_name in pdf_server.WORKFLOW_TEMPLATES.values():
@@ -28,6 +30,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf_server, 'TEMPLATE_DIR', str(template_dir))
     monkeypatch.setattr(pdf_server, 'WORDS_DIR', str(words_dir))
     monkeypatch.setattr(pdf_server, 'PDFS_DIR', str(pdfs_dir))
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share_dir))
+    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(tmp_path / 'pending'))
+    pdf_server.activity_log.configure_project_share(str(share_dir))
     monkeypatch.setattr(pdf_server.os.path, 'expanduser', lambda _value: str(tmp_path / 'home'))
 
     def fake_word(_template_path, output_path, _data):
@@ -82,11 +87,7 @@ def test_pdf_id_lifecycle_and_content_template_cache(client, monkeypatch):
     assert 'inline' in inline.headers['Content-Disposition']
 
     saved = client.post(f"/api/pdfs/{created['pdfId']}/save-desktop", json={})
-    assert saved.status_code == 200
-    conflict = client.post(f"/api/pdfs/{created['pdfId']}/save-desktop", json={})
-    assert conflict.status_code == 409
-    overwrite = client.post(f"/api/pdfs/{created['pdfId']}/save-desktop", json={'overwrite': True})
-    assert overwrite.status_code == 200
+    assert saved.status_code == 410
 
 
 def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, monkeypatch):
@@ -94,7 +95,7 @@ def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, 
     spool = tmp_path / 'pending'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
     monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
-    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0090', 'data': {'analyst': 'A'}}
 
     first = client.post('/api/pdfs', json=payload)
@@ -102,8 +103,8 @@ def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, 
     body = first.get_json()
     assert body['backup']['status'] == 'succeeded'
     pdf_id = body['pdfId']
-    share_pdf = share / 'pdfs' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.pdf'
-    share_word = share / 'words' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.docx'
+    share_pdf = share / 'pdfs' / 'pw-prw' / 'PW-26-0090.pdf'
+    share_word = share / 'words' / 'pw-prw' / 'PW-26-0090.docx'
     share_manifest = share / 'manifests' / 'pw-prw' / 'PW-26-0090' / 'PW-26-0090.json'
     assert share_pdf.stat().st_size > 0
     assert share_word.stat().st_size > 0
@@ -118,7 +119,7 @@ def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, 
 def test_project_share_replacement_keeps_old_version_in_history(client, tmp_path, monkeypatch):
     share = tmp_path / 'project-share'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
-    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     initial = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0093', 'data': {'analyst': 'A'}}
     first = client.post('/api/pdfs', json=initial)
     assert first.status_code == 201
@@ -134,52 +135,69 @@ def test_project_share_replacement_keeps_old_version_in_history(client, tmp_path
     assert replacement.get_json()['backup']['status'] == 'succeeded'
     history = share / 'history' / 'pw-prw' / 'PW-26-0093' / old_pdf_id
     assert (history / 'PW-26-0093.json').is_file()
-    assert (share / 'pdfs' / 'pw-prw' / 'PW-26-0093' / 'PW-26-0093.pdf').is_file()
+    assert (share / 'pdfs' / 'pw-prw' / 'PW-26-0093.pdf').is_file()
 
 
-def test_project_share_outage_keeps_local_artifacts_and_retry_recovers(client, tmp_path, monkeypatch):
+def test_project_share_outage_does_not_leave_local_controlled_artifacts(client, tmp_path, monkeypatch):
     blocked = tmp_path / 'share-is-a-file'
     blocked.write_text('unavailable', encoding='utf-8')
     share = tmp_path / 'project-share'
-    spool = tmp_path / 'pending'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(blocked))
-    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
-    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0091', 'data': {'analyst': 'A'}}
 
     created = client.post('/api/pdfs', json=payload)
-    assert created.status_code == 201
-    body = created.get_json()
-    assert body['backup']['status'] == 'pending'
-    pdf_id = body['pdfId']
-    assert client.get(f'/api/pdfs/{pdf_id}').status_code == 200
-    assert (spool / f'{pdf_id}.json').is_file()
-
-    blocked.unlink()
-    share.mkdir()
-    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
-    retry = client.post(f'/api/pdfs/{pdf_id}/backup-retry')
-    assert retry.status_code == 200
-    assert retry.get_json()['status'] == 'succeeded'
-    assert not (spool / f'{pdf_id}.json').exists()
+    assert created.status_code == 503
+    assert not [path for path in (tmp_path / 'cache').rglob('*') if path.is_file()]
 
 
-def test_project_share_different_destination_content_stays_pending(client, tmp_path, monkeypatch):
+def test_project_share_replaces_corrupt_primary_for_same_content(client, tmp_path, monkeypatch):
     share = tmp_path / 'project-share'
-    spool = tmp_path / 'pending'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
-    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
-    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: {'action': 'test'})
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0092', 'data': {'analyst': 'A'}}
     created = client.post('/api/pdfs', json=payload).get_json()
     pdf_id = created['pdfId']
-    destination = share / 'pdfs' / 'pw-prw' / 'PW-26-0092' / 'PW-26-0092.pdf'
+    destination = share / 'pdfs' / 'pw-prw' / 'PW-26-0092.pdf'
     destination.write_bytes(b'%PDF-1.4 different\n%%EOF\n')
 
     cached = client.post('/api/pdfs', json=payload)
-    assert cached.status_code == 200
-    assert cached.get_json()['backup']['status'] == 'pending'
-    assert (spool / f'{pdf_id}.json').is_file()
+    assert cached.status_code == 201
+    assert cached.get_json()['cached'] is False
+    assert destination.read_bytes().startswith(b'%PDF-')
+
+
+def test_torn_artifact_set_is_detected_and_regenerated(client, tmp_path, monkeypatch):
+    """A partial/crashed promotion that leaves DOCX+PDF valid but metadata stale,
+    or metadata present with mismatched artifact hashes, must never be treated
+    as the current worksheet version."""
+    share = tmp_path / 'project-share'
+    monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
+    monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
+    payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0094', 'data': {'analyst': 'A'}}
+    created = client.post('/api/pdfs', json=payload).get_json()
+    pdf_id = created['pdfId']
+
+    # Tear the set: keep metadata but replace DOCX with different content.
+    word_path = share / 'words' / 'pw-prw' / 'PW-26-0094.docx'
+    pdf_path = share / 'pdfs' / 'pw-prw' / 'PW-26-0094.pdf'
+    metadata_path = share / 'manifests' / 'pw-prw' / 'PW-26-0094' / 'PW-26-0094.json'
+    assert word_path.is_file() and pdf_path.is_file() and metadata_path.is_file()
+
+    with zipfile.ZipFile(word_path, 'a') as archive:
+        archive.writestr('extra.xml', b'<torn>different content</torn>')
+
+    # Same input must now regenerate because the stored DOCX hash no longer
+    # matches the metadata commit record.
+    regenerated = client.post('/api/pdfs', json=payload)
+    assert regenerated.status_code == 201
+    assert regenerated.get_json()['cached'] is False
+
+    # A changed input must still surface a controlled conflict, not silently
+    # overwrite the torn set.
+    changed = {**payload, 'data': {'analyst': 'B'}}
+    conflict = client.post('/api/pdfs', json=changed).get_json()
+    assert conflict['code'] == 'WORKSHEET_CONTENT_CONFLICT'
 
 
 def test_rejects_unknown_workflow_paths_and_validates_cv_routes(client):
@@ -255,13 +273,14 @@ def test_forged_sidecar_cannot_control_download_or_desktop_path(client):
     created = client.post('/api/pdfs', json={
         'workflow': 'pw-prw', 'worksheetNo': 'PW-1', 'data': {}
     }).get_json()
-    _, metadata_path = pdf_server._pdf_paths('pw-prw', created['pdfId'])
+    metadata_path = (Path(pdf_server.PROJECT_SHARE_ROOT) / 'manifests' / 'pw-prw' /
+                     'PW-1' / 'PW-1.json')
     metadata = json.loads(Path(metadata_path).read_text(encoding='utf-8'))
     metadata['filename'] = '../outside.pdf'
     Path(metadata_path).write_text(json.dumps(metadata), encoding='utf-8')
 
     assert client.get(f"/api/pdfs/{created['pdfId']}").status_code == 404
-    assert client.post(f"/api/pdfs/{created['pdfId']}/save-desktop").status_code == 404
+    assert client.post(f"/api/pdfs/{created['pdfId']}/save-desktop").status_code == 410
 
 
 def test_malformed_catalog_manifest_fails_closed(client, tmp_path, monkeypatch):
@@ -393,7 +412,7 @@ def test_pdf_cache_is_incomplete_without_the_controlled_docx(client):
     first = client.post('/api/pdfs', json=payload)
     assert first.status_code == 201
     created = first.get_json()
-    word_path = Path(pdf_server.WORDS_DIR) / 'pw-prw' / 'PW-26-0002.docx'
+    word_path = Path(pdf_server.PROJECT_SHARE_ROOT) / 'words' / 'pw-prw' / 'PW-26-0002.docx'
     word_path.unlink()
 
     regenerated = client.post('/api/pdfs', json=payload)
@@ -411,8 +430,9 @@ def test_pdf_cache_regenerates_stale_or_empty_artifacts(client):
     first = client.post('/api/pdfs', json=payload)
     assert first.status_code == 201
     pdf_id = first.get_json()['pdfId']
-    pdf_path, metadata_path = pdf_server._pdf_paths('pw-prw', pdf_id)
-    word_path = Path(pdf_server.WORDS_DIR) / 'pw-prw' / 'PW-26-0003.docx'
+    pdf_path = Path(pdf_server.PROJECT_SHARE_ROOT) / 'pdfs' / 'pw-prw' / 'PW-26-0003.pdf'
+    metadata_path = Path(pdf_server.PROJECT_SHARE_ROOT) / 'manifests' / 'pw-prw' / 'PW-26-0003' / 'PW-26-0003.json'
+    word_path = Path(pdf_server.PROJECT_SHARE_ROOT) / 'words' / 'pw-prw' / 'PW-26-0003.docx'
 
     metadata = json.loads(Path(metadata_path).read_text(encoding='utf-8'))
     metadata['rendererVersion'] = 'old-renderer'
@@ -437,7 +457,7 @@ def test_pdf_cache_regenerates_nonempty_invalid_pdf(client):
     }
     first = client.post('/api/pdfs', json=payload)
     assert first.status_code == 201
-    pdf_path, _metadata_path = pdf_server._pdf_paths('pw-prw', first.get_json()['pdfId'])
+    pdf_path = Path(pdf_server.PROJECT_SHARE_ROOT) / 'pdfs' / 'pw-prw' / 'PW-26-0004.pdf'
     Path(pdf_path).write_bytes(b'not a pdf')
 
     regenerated = client.post('/api/pdfs', json=payload)

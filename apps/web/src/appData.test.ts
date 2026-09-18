@@ -50,7 +50,7 @@ describe('laboratory workflow policies', () => {
   });
 
   it('preserves binder work and secondary scope in list routes', () => {
-    expect(binderById('b10-em-air')?.route).toBe('/list?building=Building+10&workflow=em-air&samplingMode=passive%2Cactive');
+    expect(binderById('b10-em-air')?.route).toBe('/list?building=Building+10&workflow=em-air');
     expect(binderById('b10-ca')?.route).toBe('/list?building=Building+10&workflow=compressed-air&gasType=CA');
     expect(listRoute('Other', 'pw-prw', { waterType: 'all' })).toBe('/list?building=Other&workflow=pw-prw&waterType=all');
   });

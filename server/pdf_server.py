@@ -21,8 +21,14 @@ import tempfile
 import hashlib
 import socket
 import threading
+from contextlib import contextmanager
 
 from datetime import datetime
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore
 
 import activity_log
 from pathlib import Path
@@ -41,8 +47,14 @@ INVENTORY_INDEX_PATHS = (
     os.path.join(DIST_DIR, 'catalog', 'inventory-index.json'),
     os.path.join(BASE_DIR, 'apps', 'web', 'public', 'catalog', 'inventory-index.json')
 )
-WORDS_DIR = os.path.join(BASE_DIR, 'words')
-PDFS_DIR = os.path.join(BASE_DIR, 'pdfs')
+# These folders are retained for compatibility with retired path-based APIs
+# and tests. The supported document API writes controlled artifacts to the
+# project share and uses the OS temp directory only while converting.
+CACHE_ROOT = os.environ.get(
+    'ANF3_CACHE_DIR', os.path.join(tempfile.gettempdir(), 'ANF3-Laboratory-Records-cache')
+).strip()
+WORDS_DIR = os.path.join(CACHE_ROOT, 'words')
+PDFS_DIR = os.path.join(CACHE_ROOT, 'pdfs')
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 # The share is server-only runtime configuration. The browser never receives
 # this path and never writes to it directly.
@@ -127,14 +139,7 @@ FORM_FOLDERS = [
 # Create folder structure
 def create_folder_structure():
     """Create all necessary folders for the application"""
-    os.makedirs(WORDS_DIR, exist_ok=True)
-    os.makedirs(PDFS_DIR, exist_ok=True)
     os.makedirs(TEMPLATE_DIR, exist_ok=True)
-    
-    for folder in FORM_FOLDERS:
-        os.makedirs(os.path.join(WORDS_DIR, folder), exist_ok=True)
-        os.makedirs(os.path.join(PDFS_DIR, folder), exist_ok=True)
-    
     print("[OK] Folder structure created")
 
 # Initialize folders on startup
@@ -936,6 +941,162 @@ def _path_within(path, root):
         return False
 
 
+def _lock_file_handle(handle):
+    """Best-effort cross-process exclusive lock for the open file handle."""
+    if msvcrt is None:
+        return
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    except OSError:
+        pass
+
+
+def _unlock_file_handle(handle):
+    """Release a lock obtained by _lock_file_handle."""
+    if msvcrt is None:
+        return
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _worksheet_file_lock(workflow, worksheet_no):
+    """Serialize multi-PC access to one worksheet's controlled artifacts."""
+    if not PROJECT_SHARE_ROOT or not SAFE_KEY_RE.fullmatch(str(workflow or '')) or not SAFE_KEY_RE.fullmatch(str(worksheet_no or '')):
+        yield
+        return
+    lock_dir = os.path.join(PROJECT_SHARE_ROOT, '.locks', workflow)
+    lock_path = os.path.join(lock_dir, f'{worksheet_no}.lock')
+    try:
+        os.makedirs(lock_dir, exist_ok=True)
+    except OSError:
+        yield
+        return
+    try:
+        with open(lock_path, 'a') as lock_file:
+            _lock_file_handle(lock_file)
+            try:
+                yield
+            finally:
+                _unlock_file_handle(lock_file)
+    except OSError:
+        yield
+
+
+def _ensure_project_share():
+    """Make the configured share writable before any controlled rendering."""
+    root = str(PROJECT_SHARE_ROOT or '').strip()
+    if not root:
+        return False
+    try:
+        os.makedirs(root, exist_ok=True)
+        if not os.path.isdir(root):
+            return False
+        activity_log.configure_project_share(root)
+        return True
+    except OSError:
+        return False
+
+
+def _share_artifact_paths(workflow, worksheet_no):
+    if (not PROJECT_SHARE_ROOT or not SAFE_KEY_RE.fullmatch(str(workflow or '')) or
+            not SAFE_KEY_RE.fullmatch(str(worksheet_no or ''))):
+        return None
+    word_relative = os.path.join('words', workflow, f'{worksheet_no}.docx')
+    pdf_relative = os.path.join('pdfs', workflow, f'{worksheet_no}.pdf')
+    metadata_relative = os.path.join('manifests', workflow, worksheet_no, f'{worksheet_no}.json')
+    paths = {
+        'word': os.path.join(PROJECT_SHARE_ROOT, word_relative),
+        'pdf': os.path.join(PROJECT_SHARE_ROOT, pdf_relative),
+        'metadata': os.path.join(PROJECT_SHARE_ROOT, metadata_relative),
+        'wordRelativePath': word_relative,
+        'pdfRelativePath': pdf_relative,
+        'metadataRelativePath': metadata_relative,
+    }
+    if not all(_path_within(paths[key], PROJECT_SHARE_ROOT) for key in ('word', 'pdf', 'metadata')):
+        return None
+    return paths
+
+
+def _share_metadata(workflow, worksheet_no):
+    paths = _share_artifact_paths(workflow, worksheet_no)
+    if not paths or not _is_nonempty_file(paths['metadata']):
+        return None, paths
+    try:
+        with open(paths['metadata'], 'r', encoding='utf-8') as source:
+            metadata = json.load(source)
+    except (OSError, ValueError, TypeError):
+        return None, paths
+    if not isinstance(metadata, dict):
+        return None, paths
+    return metadata, paths
+
+
+def _share_entry_is_current(workflow, worksheet_no, pdf_id):
+    metadata, paths = _share_metadata(workflow, worksheet_no)
+    if not metadata or not paths:
+        return False
+    try:
+        pdf_fp = _artifact_fingerprint(paths['pdf'])
+        word_fp = _artifact_fingerprint(paths['word'])
+    except OSError:
+        return False
+    return (
+        metadata.get('pdfId') == pdf_id and
+        metadata.get('workflow') == workflow and
+        metadata.get('worksheetNo') == worksheet_no and
+        metadata.get('filename') == f'{worksheet_no}.pdf' and
+        metadata.get('status') == 'ready' and
+        metadata.get('rendererVersion') == DOCX_RENDERER_VERSION and
+        metadata.get('wordSha256') == word_fp['sha256'] and
+        metadata.get('pdfSha256') == pdf_fp['sha256'] and
+        metadata.get('wordSize') == word_fp['size'] and
+        metadata.get('pdfSize') == pdf_fp['size'] and
+        _is_valid_pdf(paths['pdf']) and
+        zipfile.is_zipfile(paths['word'])
+    )
+
+
+def _archive_existing_share_version(workflow, worksheet_no, pdf_id):
+    """Keep a replaced controlled set in the share history before promotion."""
+    metadata, paths = _share_metadata(workflow, worksheet_no)
+    if not metadata or not paths or metadata.get('pdfId') == pdf_id:
+        return
+    previous_id = str(metadata.get('pdfId') or '')
+    if not PDF_ID_RE.fullmatch(previous_id):
+        previous_id = 'previous'
+    history_root = os.path.join(PROJECT_SHARE_ROOT, 'history', workflow, worksheet_no, previous_id)
+    for kind, source, filename in (
+        ('word', paths['word'], f'{worksheet_no}.docx'),
+        ('pdf', paths['pdf'], f'{worksheet_no}.pdf'),
+        ('metadata', paths['metadata'], f'{worksheet_no}.json'),
+    ):
+        expected = _artifact_fingerprint(source)
+        _copy_verified(source, os.path.join(history_root, filename), expected)
+
+
+def _stage_share_artifacts(artifacts):
+    """Copy local conversion results to same-share staging files and verify them."""
+    staged = []
+    try:
+        for source, destination in artifacts:
+            expected = _artifact_fingerprint(source)
+            temporary = f'{destination}.part'
+            _copy_verified(source, temporary, expected, replace=True)
+            staged.append((temporary, destination))
+        return staged
+    except Exception:
+        for temporary, _destination in staged:
+            try:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+        raise
+
+
 def _artifact_fingerprint(path):
     if not _is_nonempty_file(path):
         raise OSError(f'Artifact is missing or empty: {path}')
@@ -944,8 +1105,8 @@ def _artifact_fingerprint(path):
 
 def _backup_event(action, worksheet_no, detail):
     # Backup attribution is server-generated and is never treated as a
-    # signature or authentication event.
-    activity_log.record(action=action, worksheet_no=worksheet_no, detail=detail)
+    # signature or authentication event. The reason is logged server-side only.
+    _entry, _reason = activity_log.record(action=action, worksheet_no=worksheet_no, detail=detail)
 
 
 def _write_json_atomic(path, value):
@@ -995,13 +1156,14 @@ def _backup_manifest(workflow, worksheet_no, pdf_id, word_path, pdf_path, metada
     with open(metadata_path, 'r', encoding='utf-8') as source:
         metadata = json.load(source)
     if (metadata.get('pdfId') != pdf_id or metadata.get('workflow') != workflow or
+            metadata.get('worksheetNo') != worksheet_no or
             metadata.get('filename') != f'{worksheet_no}.pdf'):
-        raise ValueError('Local artifact metadata does not match worksheet identity')
+        raise ValueError('Generated artifact metadata does not match worksheet identity')
 
     artifacts = []
     for kind, source_path, relative_path in (
-        ('docx', word_path, os.path.join('words', workflow, worksheet_no, f'{worksheet_no}.docx')),
-        ('pdf', pdf_path, os.path.join('pdfs', workflow, worksheet_no, f'{worksheet_no}.pdf')),
+        ('docx', word_path, os.path.join('words', workflow, f'{worksheet_no}.docx')),
+        ('pdf', pdf_path, os.path.join('pdfs', workflow, f'{worksheet_no}.pdf')),
         ('metadata', metadata_path, os.path.join('manifests', workflow, worksheet_no, f'{worksheet_no}.json')),
     ):
         fingerprint = _artifact_fingerprint(source_path)
@@ -1041,78 +1203,157 @@ def _preserve_existing_share_artifacts(manifest):
     workflow = str(manifest.get('workflow') or '')
     worksheet_no = str(manifest.get('worksheetNo') or '')
     current_pdf_id = str(manifest.get('pdfId') or '')
-    destinations = [
-        os.path.join(PROJECT_SHARE_ROOT, str(artifact['relativePath']))
-        for artifact in manifest.get('artifacts', [])
-    ]
-    mismatched = []
-    for artifact, destination in zip(manifest.get('artifacts', []), destinations):
-        if not os.path.exists(destination):
-            continue
-        expected = {'size': int(artifact.get('size', 0)), 'sha256': str(artifact.get('sha256') or '')}
-        actual = _artifact_fingerprint(destination)
-        if actual != expected:
-            mismatched.append((artifact, destination, actual))
-    if not mismatched:
+    current, _paths = _share_metadata(workflow, worksheet_no)
+    if not current or current.get('pdfId') == current_pdf_id:
         return
-
-    previous_pdf_id = _existing_share_pdf_id(workflow, worksheet_no, current_pdf_id)
-    if previous_pdf_id is None:
-        raise ValueError('Project share already contains different content for this PDF identity')
+    previous_pdf_id = str(current.get('pdfId') or '')
+    if not PDF_ID_RE.fullmatch(previous_pdf_id):
+        previous_pdf_id = 'previous'
     history_root = os.path.join(
         PROJECT_SHARE_ROOT, str(manifest.get('historyRoot') or os.path.join('history', workflow, worksheet_no)),
         previous_pdf_id
     )
-    for artifact, destination, actual in mismatched:
-        history_path = os.path.join(history_root, os.path.basename(str(artifact['relativePath'])))
+    for artifact in manifest.get('artifacts', []):
+        relative_path = str(artifact.get('relativePath') or '')
+        destination = os.path.join(PROJECT_SHARE_ROOT, relative_path)
+        if not _path_within(destination, PROJECT_SHARE_ROOT) or not _is_nonempty_file(destination):
+            continue
+        actual = _artifact_fingerprint(destination)
+        history_path = os.path.join(history_root, os.path.basename(relative_path))
         _copy_verified(destination, history_path, actual)
+
+
+def _publish_manifest(manifest):
+    """Publish the complete DOCX/PDF/manifest set to the Share atomically.
+
+    DOCX and PDF are promoted first; the metadata file is written last as the
+    commit record. If metadata promotion fails, the DOCX/PDF changes are rolled
+    back so a torn set can never be treated as the current worksheet version.
+    """
+    if not _ensure_project_share():
+        raise OSError('Project share is unavailable')
+
+    artifacts_by_kind = {}
+    for artifact in manifest.get('artifacts', []):
+        source = str(artifact.get('source') or '')
+        destination = os.path.join(PROJECT_SHARE_ROOT, str(artifact.get('relativePath') or ''))
+        if (not source or not _path_within(destination, PROJECT_SHARE_ROOT) or
+                _artifact_fingerprint(source) != {
+                    'size': int(artifact.get('size', 0)),
+                    'sha256': str(artifact.get('sha256') or '')
+                }):
+            raise ValueError(f'Generated artifact changed or is unavailable: {source}')
+        artifacts_by_kind[str(artifact.get('kind') or '')] = (source, destination)
+
+    if not all(kind in artifacts_by_kind for kind in ('docx', 'pdf', 'metadata')):
+        raise ValueError('Manifest is missing one or more controlled artifacts')
+
+    data_artifacts = [artifacts_by_kind['docx'], artifacts_by_kind['pdf']]
+    commit_source, commit_destination = artifacts_by_kind['metadata']
+
+    staged = []
+    backups = []
+    promoted = []
+    try:
+        with BACKUP_LOCK:
+            # Stage every byte first. A failed copy cannot disturb the current
+            # worksheet version on the share.
+            for source, destination in data_artifacts + [(commit_source, commit_destination)]:
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                temporary = f'{destination}.part'
+                try:
+                    if os.path.exists(temporary):
+                        os.remove(temporary)
+                except OSError:
+                    pass
+                expected = _artifact_fingerprint(source)
+                shutil.copy2(source, temporary)
+                if _artifact_fingerprint(temporary) != expected:
+                    raise OSError(f'Project share copy failed integrity check: {destination}')
+                staged.append((temporary, destination))
+
+            _preserve_existing_share_artifacts(manifest)
+
+            # Promote DOCX and PDF first.
+            for temporary, destination in data_artifacts:
+                backup = f'{destination}.rollback'
+                if os.path.exists(backup):
+                    os.remove(backup)
+                if os.path.exists(destination):
+                    os.replace(destination, backup)
+                    backups.append((backup, destination))
+                os.replace(temporary, destination)
+                promoted.append(destination)
+
+            # Metadata is the commit record: promote it only after DOCX/PDF.
+            commit_temporary = next(temporary for temporary, destination in staged if destination == commit_destination)
+            commit_backup = f'{commit_destination}.rollback'
+            if os.path.exists(commit_backup):
+                os.remove(commit_backup)
+            if os.path.exists(commit_destination):
+                os.replace(commit_destination, commit_backup)
+                backups.append((commit_backup, commit_destination))
+            os.replace(commit_temporary, commit_destination)
+            promoted.append(commit_destination)
+    except (OSError, ValueError, KeyError, TypeError):
+        # Roll back every promoted artifact if the commit did not complete.
+        for destination in reversed(promoted):
+            try:
+                if os.path.exists(destination):
+                    os.remove(destination)
+            except OSError:
+                pass
+        for backup, destination in reversed(backups):
+            try:
+                if os.path.exists(backup):
+                    os.replace(backup, destination)
+            except OSError:
+                pass
+        for temporary, _destination in staged:
+            try:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+        raise
+    finally:
+        for temporary, _destination in staged:
+            try:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+
+    for backup, _destination in backups:
+        try:
+            if os.path.exists(backup):
+                os.remove(backup)
+        except OSError:
+            pass
 
 
 def _attempt_backup(manifest, retry=False):
     worksheet_no = str(manifest.get('worksheetNo') or '')
     pdf_id = str(manifest.get('pdfId') or '')
     if not PROJECT_SHARE_ROOT:
-        return {'status': 'disabled', 'configured': False}
+        return {'status': 'failed', 'configured': False, 'pdfId': pdf_id, 'error': 'Project share is not configured'}
     if not PDF_ID_RE.fullmatch(pdf_id) or not SAFE_KEY_RE.fullmatch(worksheet_no):
         raise ValueError('Invalid backup identity')
     if retry:
         _backup_event('backup_retried', worksheet_no, f'{manifest.get("workflow", "")}/{pdf_id}')
 
     try:
-        with BACKUP_LOCK:
-            os.makedirs(PROJECT_SHARE_ROOT, exist_ok=True)
-            _preserve_existing_share_artifacts(manifest)
-            for artifact in manifest.get('artifacts', []):
-                source = str(artifact.get('source') or '')
-                expected = {'size': int(artifact.get('size', 0)), 'sha256': str(artifact.get('sha256') or '')}
-                local_roots = (WORDS_DIR, PDFS_DIR)
-                if (not source or not any(_path_within(source, root) for root in local_roots)
-                        or _artifact_fingerprint(source) != expected):
-                    raise ValueError(f'Local artifact changed or is unavailable: {source}')
-                destination = os.path.join(PROJECT_SHARE_ROOT, artifact['relativePath'])
-                _copy_verified(source, destination, expected, replace=True)
-            pending = _backup_pending_path(pdf_id)
-            if pending:
-                try:
-                    os.remove(pending)
-                except OSError:
-                    pass
+        _publish_manifest(manifest)
         _backup_event('backup_succeeded', worksheet_no, f'{manifest.get("workflow", "")}/{pdf_id}')
         return {'status': 'succeeded', 'configured': True, 'pdfId': pdf_id}
     except (OSError, ValueError, KeyError, TypeError) as error:
-        pending = _backup_pending_path(pdf_id)
-        if pending:
-            try:
-                _write_json_atomic(pending, manifest)
-            except OSError:
-                pass
         _backup_event('backup_failed', worksheet_no, str(error))
-        return {'status': 'pending', 'configured': True, 'pdfId': pdf_id, 'error': str(error)}
+        return {'status': 'failed', 'configured': True, 'pdfId': pdf_id, 'error': str(error)}
 
 
 def _backup_artifacts(workflow, worksheet_no, pdf_id, word_path, pdf_path, metadata_path, retry=False):
     if not PROJECT_SHARE_ROOT:
-        return {'status': 'disabled', 'configured': False}
+        return {'status': 'failed', 'configured': False, 'pdfId': pdf_id, 'error': 'Project share is not configured'}
     try:
         manifest = _backup_manifest(workflow, worksheet_no, pdf_id, word_path, pdf_path, metadata_path)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
@@ -1196,16 +1437,17 @@ def _cache_entry_is_current(workflow, worksheet_no, pdf_id, pdf_path,
 
 
 def _worksheet_artifact_conflicts(workflow, worksheet_no, pdf_id):
-    """Return ready artifact ids for this worksheet with different content."""
-    folder = os.path.join(PDFS_DIR, workflow)
-    if not os.path.isdir(folder):
+    """Return ready Share artifact ids for this worksheet with different content."""
+    folder = os.path.join(PROJECT_SHARE_ROOT, 'manifests', workflow)
+    if not PROJECT_SHARE_ROOT or not os.path.isdir(folder):
         return []
     conflicts = []
-    for name in os.listdir(folder):
-        if not name.endswith('.json'):
+    for worksheet_folder in os.listdir(folder):
+        metadata_path = os.path.join(folder, worksheet_folder, f'{worksheet_folder}.json')
+        if worksheet_folder != worksheet_no or not _path_within(metadata_path, folder):
             continue
         try:
-            with open(os.path.join(folder, name), encoding='utf-8') as source:
+            with open(metadata_path, encoding='utf-8') as source:
                 metadata = json.load(source)
         except (OSError, ValueError):
             continue
@@ -1312,26 +1554,26 @@ def _replace_artifact_set(promotions, removals):
 
 
 def _load_pdf_metadata(pdf_id):
+    if not PROJECT_SHARE_ROOT or not PDF_ID_RE.fullmatch(str(pdf_id or '')):
+        return None, None
     for workflow in WORKFLOW_TEMPLATES:
-        pdf_path, metadata_path = _pdf_paths(workflow, pdf_id)
-        workflow_root = os.path.join(PDFS_DIR, workflow)
-        if (_is_file_within(pdf_path, workflow_root) and
-                _is_file_within(metadata_path, workflow_root)):
-            try:
-                if not _is_nonempty_file(pdf_path):
-                    continue
-                with open(metadata_path, 'r', encoding='utf-8') as source:
-                    metadata = json.load(source)
-                if not isinstance(metadata, dict):
-                    return None, None
-                if (metadata.get('pdfId') != pdf_id or
-                        metadata.get('workflow') != workflow or
-                        metadata.get('status') != 'ready' or
-                        not _safe_pdf_filename(metadata.get('filename'))):
-                    return None, None
-                return metadata, pdf_path
-            except (OSError, ValueError):
-                return None, None
+        manifest_root = os.path.join(PROJECT_SHARE_ROOT, 'manifests', workflow)
+        if not os.path.isdir(manifest_root):
+            continue
+        try:
+            worksheet_folders = os.listdir(manifest_root)
+        except OSError:
+            continue
+        for worksheet_no in worksheet_folders:
+            metadata, paths = _share_metadata(workflow, worksheet_no)
+            if not metadata or not paths:
+                continue
+            if (metadata.get('pdfId') == pdf_id and
+                    metadata.get('workflow') == workflow and
+                    metadata.get('status') == 'ready' and
+                    _safe_pdf_filename(metadata.get('filename')) and
+                    _is_valid_pdf(paths['pdf'])):
+                return metadata, paths['pdf']
     return None, None
 
 
@@ -1443,14 +1685,11 @@ def create_pdf():
     content = json.dumps(cache_input, ensure_ascii=False, sort_keys=True,
                          separators=(',', ':')).encode('utf-8')
     pdf_id = hashlib.sha256(content).hexdigest()
-    pdf_path, metadata_path = _pdf_paths(workflow, pdf_id)
-    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
-    word_folder = os.path.join(WORDS_DIR, workflow)
-    os.makedirs(word_folder, exist_ok=True)
-    # Keep the filled DOCX as the worksheet's controlled companion artifact.
-    # The PDF id remains internal cache identity; the user-facing file identity
-    # is always the worksheet number.
-    word_path = os.path.join(word_folder, f'{worksheet_no}.docx')
+    if not _ensure_project_share():
+        return _json_error('Project share is unavailable; the worksheet was not saved', 503)
+    share_paths = _share_artifact_paths(workflow, worksheet_no)
+    if not share_paths:
+        return _json_error('Project share path is invalid', 503)
     regeneration = payload.get('regeneration') or {}
     replace_requested = regeneration.get('mode') == 'replace'
     requested_pdf_id = str(regeneration.get('requestedPdfId') or '')
@@ -1458,89 +1697,94 @@ def create_pdf():
 
     # The worksheet identity is user-facing and must never be silently
     # overwritten by two concurrent requests. Serialize the identity check,
-    # DOCX write, conversion and metadata commit as one local transaction.
-    with DOCUMENT_GENERATION_LOCK:
-        existing_ids = _worksheet_artifact_conflicts(workflow, worksheet_no, pdf_id)
-        changed_fields = _worksheet_changed_fields(workflow, existing_ids, document_data) if existing_ids else []
-        if existing_ids:
-            valid_replace = (
-                replace_requested and
-                requested_pdf_id == pdf_id and
-                isinstance(supplied_existing_ids, list) and
-                sorted(str(value) for value in supplied_existing_ids) == existing_ids
-            )
-            if not valid_replace:
-                return jsonify({
-                    'error': 'Worksheet already has a generated document with different content; review and confirm replacement',
-                    'code': 'WORKSHEET_CONTENT_CONFLICT',
-                    'worksheetNo': worksheet_no,
+    # DOCX write, conversion and metadata commit as one transaction, first
+    # across PCs via a share lock file, then across threads in this process.
+    with _worksheet_file_lock(workflow, worksheet_no):
+        with DOCUMENT_GENERATION_LOCK:
+            existing_ids = _worksheet_artifact_conflicts(workflow, worksheet_no, pdf_id)
+            changed_fields = _worksheet_changed_fields(workflow, existing_ids, document_data) if existing_ids else []
+            if existing_ids:
+                valid_replace = (
+                    replace_requested and
+                    requested_pdf_id == pdf_id and
+                    isinstance(supplied_existing_ids, list) and
+                    sorted(str(value) for value in supplied_existing_ids) == existing_ids
+                )
+                if not valid_replace:
+                    return jsonify({
+                        'error': 'Worksheet already has a generated document with different content; review and confirm replacement',
+                        'code': 'WORKSHEET_CONTENT_CONFLICT',
+                        'worksheetNo': worksheet_no,
+                        'workflow': workflow,
+                        'requestedPdfId': pdf_id,
+                        'existingPdfIds': existing_ids,
+                        'changedFields': changed_fields
+                    }), 409
+
+            # A Share metadata/PDF/DOCX set is the only persistent cache. Local
+            # hash-named files are never treated as controlled artifacts.
+            if _share_entry_is_current(workflow, worksheet_no, pdf_id):
+                return jsonify({'pdfId': pdf_id, 'status': 'ready', 'cached': True,
+                                'backup': {'status': 'succeeded', 'configured': True, 'pdfId': pdf_id}})
+
+            temporary_dir = tempfile.mkdtemp(prefix='anf3-pdf-')
+            temporary_word = os.path.join(temporary_dir, f'{worksheet_no}.docx')
+            temporary_pdf = os.path.join(temporary_dir, f'{pdf_id}.pdf')
+            temporary_metadata = os.path.join(temporary_dir, f'{pdf_id}.json')
+            try:
+                if pages:
+                    sanitized_pages = [sanitize_data_for_xml(page) for page in pages]
+                    build_multipage_docx(template_path, temporary_word, sanitized_pages)
+                else:
+                    replace_placeholders_in_file(template_path, temporary_word, document_data)
+                unresolved = _unresolved_placeholders(temporary_word)
+                if unresolved:
+                    return _json_error('Generated DOCX contains unresolved placeholders', 500)
+                success, converter, error = convert_to_pdf(temporary_word, temporary_pdf)
+                if not success or not os.path.isfile(temporary_pdf):
+                    print(f'[ERROR] PDF conversion failed: {error or "unknown error"}')
+                    return _json_error('PDF conversion failed', 503)
+                metadata = {
+                    'pdfId': pdf_id,
+                    'status': 'ready',
                     'workflow': workflow,
-                    'requestedPdfId': pdf_id,
-                    'existingPdfIds': existing_ids,
-                    'changedFields': changed_fields
-                }), 409
-
-        # A metadata/PDF cache entry without its worksheet DOCX is incomplete;
-        # regenerate the pair instead of reporting a false cache hit.
-        if _cache_entry_is_current(workflow, worksheet_no, pdf_id, pdf_path,
-                                   metadata_path, word_path):
-            backup = _backup_artifacts(workflow, worksheet_no, pdf_id, word_path, pdf_path, metadata_path)
-            return jsonify({'pdfId': pdf_id, 'status': 'ready', 'cached': True, 'backup': backup})
-
-        temporary_dir = tempfile.mkdtemp(prefix='anf3-pdf-', dir=os.path.dirname(pdf_path))
-        temporary_word = os.path.join(temporary_dir, f'{worksheet_no}.docx')
-        temporary_pdf = os.path.join(temporary_dir, f'{pdf_id}.pdf')
-        temporary_metadata = os.path.join(temporary_dir, f'{pdf_id}.json')
-        try:
-            if pages:
-                sanitized_pages = [sanitize_data_for_xml(page) for page in pages]
-                build_multipage_docx(template_path, temporary_word, sanitized_pages)
-            else:
-                replace_placeholders_in_file(template_path, temporary_word, document_data)
-            unresolved = _unresolved_placeholders(temporary_word)
-            if unresolved:
-                return _json_error('Generated DOCX contains unresolved placeholders', 500)
-            success, converter, error = convert_to_pdf(temporary_word, temporary_pdf)
-            if not success or not os.path.isfile(temporary_pdf):
-                print(f'[ERROR] PDF conversion failed: {error or "unknown error"}')
-                return _json_error('PDF conversion failed', 503)
-            metadata = {
-                'pdfId': pdf_id,
-                'status': 'ready',
-                'workflow': workflow,
-                'worksheetNo': worksheet_no,
-                'filename': f'{worksheet_no}.pdf',
-                'templateHash': template_hash,
-                'templateOwner': PDF_WORKFLOW_REGISTRY[workflow]['owner'],
-                'templateFamily': PDF_WORKFLOW_REGISTRY[workflow]['family'],
-                'sourceWorkflow': PDF_WORKFLOW_REGISTRY[workflow].get('sourceWorkflow'),
-                'converter': converter,
-                'regeneratedAt': datetime.now().astimezone().isoformat() if existing_ids else None,
-                'supersededPdfIds': existing_ids if existing_ids else [],
-                'rendererVersion': DOCX_RENDERER_VERSION,
-                'fieldHashes': _field_hashes(document_data),
-                'changedFields': changed_fields
-            }
-            with open(temporary_metadata, 'w', encoding='utf-8') as target:
-                json.dump(metadata, target, ensure_ascii=False, sort_keys=True)
-            # Do not disturb the controlled pair until DOCX, PDF and sidecar
-            # are all complete. A failed conversion therefore leaves the old
-            # worksheet available exactly as it was.
-            removals = []
-            for old_pdf_id in existing_ids:
-                old_pdf_path, old_metadata_path = _pdf_paths(workflow, old_pdf_id)
-                removals.extend((old_pdf_path, old_metadata_path))
-            _replace_artifact_set(
-                ((temporary_word, word_path), (temporary_pdf, pdf_path), (temporary_metadata, metadata_path)),
-                removals
-            )
-            backup = _backup_artifacts(workflow, worksheet_no, pdf_id, word_path, pdf_path, metadata_path)
-            return jsonify({'pdfId': pdf_id, 'status': 'ready', 'cached': False, 'backup': backup}), 201
-        except (OSError, ValueError, zipfile.BadZipFile) as error:
-            print(f'[ERROR] PDF generation failed: {error}')
-            return _json_error('PDF generation failed', 500)
-        finally:
-            shutil.rmtree(temporary_dir, ignore_errors=True)
+                    'worksheetNo': worksheet_no,
+                    'filename': f'{worksheet_no}.pdf',
+                    'templateHash': template_hash,
+                    'templateOwner': PDF_WORKFLOW_REGISTRY[workflow]['owner'],
+                    'templateFamily': PDF_WORKFLOW_REGISTRY[workflow]['family'],
+                    'sourceWorkflow': PDF_WORKFLOW_REGISTRY[workflow].get('sourceWorkflow'),
+                    'converter': converter,
+                    'regeneratedAt': datetime.now().astimezone().isoformat() if existing_ids else None,
+                    'supersededPdfIds': existing_ids if existing_ids else [],
+                    'rendererVersion': DOCX_RENDERER_VERSION,
+                    'fieldHashes': _field_hashes(document_data),
+                    'changedFields': changed_fields,
+                    'wordSha256': _hash_file(temporary_word),
+                    'pdfSha256': _hash_file(temporary_pdf),
+                    'wordSize': os.path.getsize(temporary_word),
+                    'pdfSize': os.path.getsize(temporary_pdf),
+                }
+                with open(temporary_metadata, 'w', encoding='utf-8') as target:
+                    json.dump(metadata, target, ensure_ascii=False, sort_keys=True)
+                # Publish only after all three temporary files are complete. The
+                # publish transaction stages and verifies every byte on the Share,
+                # and leaves the previous worksheet version usable on failure.
+                backup = _backup_artifacts(
+                    workflow, worksheet_no, pdf_id,
+                    temporary_word, temporary_pdf, temporary_metadata
+                )
+                if backup.get('status') != 'succeeded':
+                    return _json_error(
+                        backup.get('error') or 'Project share is unavailable; the worksheet was not saved',
+                        503
+                    )
+                return jsonify({'pdfId': pdf_id, 'status': 'ready', 'cached': False, 'backup': backup}), 201
+            except (OSError, ValueError, zipfile.BadZipFile) as error:
+                print(f'[ERROR] PDF generation failed: {error}')
+                return _json_error('PDF generation failed', 500)
+            finally:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
 
 
 @app.route('/api/pdfs/<pdf_id>', methods=['GET'])
@@ -1561,28 +1805,25 @@ def retry_pdf_backup(pdf_id):
     metadata, pdf_path = _load_pdf_metadata(pdf_id)
     if not metadata:
         return _json_error('PDF not found', 404)
-    pending = _backup_pending_path(pdf_id)
-    if pending and os.path.isfile(pending):
-        return jsonify(_retry_pending(pdf_id))
-    workflow = metadata['workflow']
-    worksheet_no = str(metadata.get('worksheetNo') or metadata['filename'][:-4])
-    word_path = os.path.join(WORDS_DIR, workflow, f'{worksheet_no}.docx')
-    return jsonify(_backup_artifacts(
-        workflow, worksheet_no, pdf_id, word_path, pdf_path,
-        _pdf_paths(workflow, pdf_id)[1], retry=True
-    ))
+    # Controlled artifacts are published as one Share transaction. There is
+    # intentionally no local spool to retry: a failed request never creates a
+    # worksheet that exists only on this PC.
+    return jsonify({
+        'status': 'succeeded',
+        'configured': True,
+        'pdfId': pdf_id,
+        'storage': 'project-share'
+    })
 
 
 @app.route('/api/backups/retry', methods=['POST'])
 def retry_pending_backups():
-    if not PROJECT_SHARE_ROOT:
-        return jsonify({'status': 'disabled', 'configured': False, 'retried': []})
-    try:
-        names = sorted(name for name in os.listdir(BACKUP_SPOOL_DIR) if name.endswith('.json'))
-    except OSError:
-        names = []
-    results = [_retry_pending(name[:-5]) for name in names]
-    return jsonify({'status': 'complete', 'configured': True, 'retried': results})
+    return jsonify({
+        'status': 'complete',
+        'configured': bool(PROJECT_SHARE_ROOT),
+        'retried': [],
+        'storage': 'project-share'
+    })
 
 
 @app.route('/api/pdfs/<pdf_id>/download', methods=['GET'])
@@ -1597,32 +1838,7 @@ def download_pdf(pdf_id):
 
 @app.route('/api/pdfs/<pdf_id>/save-desktop', methods=['POST'])
 def save_pdf_to_desktop(pdf_id):
-    metadata, pdf_path = _load_pdf_metadata(pdf_id)
-    if not metadata:
-        return _json_error('PDF not found', 404)
-    desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-    os.makedirs(desktop, exist_ok=True)
-    destination = os.path.join(desktop, metadata['filename'])
-    payload = request.get_json(silent=True) or {}
-    if payload.get('overwrite') is True:
-        shutil.copy2(pdf_path, destination)
-    else:
-        created = False
-        try:
-            with open(pdf_path, 'rb') as source:
-                with open(destination, 'xb') as target:
-                    created = True
-                    shutil.copyfileobj(source, target)
-        except FileExistsError:
-            return jsonify({'error': 'File already exists', 'filename': metadata['filename']}), 409
-        except OSError:
-            if created:
-                try:
-                    os.remove(destination)
-                except OSError:
-                    pass
-            return _json_error('Could not save PDF to Desktop', 500)
-    return jsonify({'success': True, 'filename': metadata['filename']})
+    return _json_error('Desktop saving is disabled; controlled files are saved to the project share', 410)
 
 # --- who used the workspace, and who printed what ---------------------------
 # QA asked "who printed this" and "who used this app". Both are answered here.
@@ -1634,7 +1850,7 @@ def write_activity_log():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return _json_error('A JSON object is required', 400)
-    entry = activity_log.record(
+    entry, reason = activity_log.record(
         action=str(payload.get('action') or ''),
         operator=payload.get('operator') or '',
         operator_name=payload.get('operatorName') or '',
@@ -1643,7 +1859,11 @@ def write_activity_log():
         detail=payload.get('detail') or '',
     )
     if entry is None:
-        return _json_error('Unknown log action', 400)
+        if reason == 'UNKNOWN_ACTION':
+            return _json_error(f"Unknown log action; accepted actions are: {', '.join(sorted(activity_log.ACTIONS))}", 400)
+        if reason == 'SHARE_UNAVAILABLE':
+            return _json_error('Activity logging is disabled because the project share is not available', 503)
+        return _json_error('Activity log write failed', 500)
     return jsonify({'ok': True, 'at': entry['at']})
 
 
@@ -1691,6 +1911,7 @@ def status():
         'libreOffice': LIBREOFFICE_PATH is not None,
         'converterAvailable': converter_available,
         'converterName': converter_name,
+        'projectShareAvailable': bool(PROJECT_SHARE_ROOT and os.path.isdir(PROJECT_SHARE_ROOT)),
         'folders': FORM_FOLDERS
     })
 

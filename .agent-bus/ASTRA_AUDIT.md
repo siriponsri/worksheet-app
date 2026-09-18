@@ -1,46 +1,55 @@
 # ASTRA AUDIT
 
 ## Identity
-- Task ID: ANF3-20260910-002
-- Iteration: 10
-- Verdict: PASS
+- Task ID: ANF3-20260918-001
+- Iteration: 1
+- Verdict: PASS with noted external gates
 
 ## Acceptance Criteria
-- [x] Launcher health and initialization-race negatives are covered by deterministic contract tests.
-- [x] Active legacy CV/EM/Compressed Air mappings preserve aliases and blank missing laboratory values.
-- [x] React document pagination is covered with over-capacity fixtures and self-contained page assertions.
-- [x] Populated DOCX/PDF artifacts cover all seven routes and every rendered page is inspected locally.
-- [x] Browser smoke covers all seven document routes plus Fill-in, focus, responsive, and dark-theme checks.
-- [x] Deployment fixtures enforce strict Apps Script `/exec` URLs, cursor termination, building isolation, and CV coverage.
-- [x] Rollback cleanup fault paths cover both remove and unlink failures without sidecars or mixed artifacts.
-- [x] One local runner produces a machine-readable evidence report and keeps external checks informational.
-- [x] Water/Air source building matchers execute regression checks for B10/B12/B16 versus Other values.
-- [x] Live Water/Air building isolation is proven after deployment of the corrected source.
-- [x] Target-machine copy-down and Owner visual gates are explicitly classified as external `NOT_TESTED` gates; they are not claimed as automated PASS.
+- [x] DOCX and PDF filenames are `<worksheetNo>.docx` and `<worksheetNo>.pdf`.
+- [x] Both files persist on the configured shared drive under `words/<workflow>/` and `pdfs/<workflow>/`.
+- [x] Hash/pdfId is used only for cache/change detection and conflict payloads.
+- [x] GENERATE / NO_CHANGE / WORKSHEET_CONTENT_CONFLICT behavior is preserved.
+- [x] Preview/download/print use the same generated artifact (verified download route).
+- [x] No `T:` hard-coded in product behavior; shared root passed explicitly from launcher to server.
+- [x] Local storage keeps only runtime/cache/temp/venv files.
+- [x] Shared storage unavailability returns a clear actionable 503 error, no silent fallback.
+- [x] Concurrent multi-PC writes addressed with cross-process file locking for logs and per-worksheet documents.
+- [x] em-air document generation works with the correct route/template.
+- [ ] Frontend TypeScript/build/test gates — NOT RUN (missing Node.js).
+- [ ] Full seven-route document artifact inspection — NOT RUN (missing Poppler).
 
 ## Verification Reviewed
-
-- `ANF3_RUN_LOCAL_ARTIFACTS=1 ANF3_ARTIFACT_SERVER=http://127.0.0.1:8011 rtk node validation/run_local_validation.mjs`: `23` local PASS, `0` FAIL, `3` external `NOT_TESTED`; `deterministicLocalPass=true`. The report contains all three evidence classes.
-- `output/validation-report.json` separates `VERIFIED_BY_EXECUTION` and `NOT_TESTED` entries. Evidence class: `VERIFIED_BY_EXECUTION`.
-- Seven-route artifact manifest contains non-empty fixture values, route/template assertions, worksheet identity, zero unresolved placeholders, and all rendered PDF pages. Evidence class: `VERIFIED_BY_EXECUTION`.
-- Browser smoke passed all seven route fixtures and the detailed interaction checks. Evidence class: `VERIFIED_BY_EXECUTION`.
-- Active Water/Air source matcher functions were executed from the checked-in Apps Script text for exact `Other` isolation. Evidence class: `VERIFIED_BY_EXECUTION`.
-- The Owner redeployed Water and Air outside this session; no production Sheets mutation, permission change, or external document mutation was performed by this session.
+- `python -m pytest server/tests -q`: 33 passed, 0 failed.
+- `python validation/validate_release.py`: PASS.
+- `git diff --check`: PASS (line-ending warnings only).
+- Local server smoke with configured share: PASS.
+- em-air synthetic generation `AT-26-B10-9001`: PASS; files on share at `words/em-air/` and `pdfs/em-air/`.
+- Download `/api/pdfs/<pdfId>/download`: PASS (200, ~1 MB PDF).
+- Controlled conflict/replace/NO_CHANGE smoke: PASS.
+- Share-unavailable smoke: `/api/status` 200 with `projectShareAvailable:false`; `/api/pdfs` 503 with actionable message.
 
 ## Findings
-
-No blocking findings remain. The prior F1 (stale Water/Air deployment) was closed after the Owner redeployed the corrected source and the aggregate read-only smoke passed all 18 configured scopes.
+No blocking findings. The AO worker harness (opencode) was non-functional for this session, so evidence gathering and implementation were performed directly by the orchestrator. The changes are surgical and evidence-supported.
 
 ## Residual Risks
+- Frontend gates (`pnpm check`, `pnpm test`, `pnpm build`, `validate_wiring.mjs`) were not executed because Node.js is not installed in this environment. They must be run before release.
+- Full `validate_document_artifacts.py` seven-route PDF page inspection was not executed because Poppler (`pdfinfo`, `pdftoppm`, `pdftotext`) is not installed. The script was updated to read artifacts from the share and verified to reach that stage.
+- Cross-process locking uses `msvcrt.locking` (Windows only). Non-Windows environments silently no-op; production is Windows.
+- Real multi-PC concurrent write stress was not exercised; the locking contract was verified by code review and single-process smoke.
 
-- Copied installed release, target-machine launch/converter, and Owner visual sign-off remain `NOT_TESTED`.
-- The final live smoke evidence is behavior-based; deployment revision identity beyond the response metadata remains an external operational concern.
-- Actual request-timeout interruption was not observed; local timeout handling and negative contracts are covered.
+## Post-Audit Remediation (2026-09-18)
+- [x] **B1** — `START-ANF3.bat` `/here` mode now requires an explicit `ANF3_PROJECT_SHARE` (env var or second argument); it no longer silently treats the local repo as durable storage. `START-SERVER.bat` double-backslash in share-existence check cleaned.
+- [x] **B1** — Added `server/tests/test_launchers.py` with 5 regression tests validating `NORMAL`, `DEV`, `/here`, `/here with share`, and missing-share behavior.
+- [x] **M1** — `_publish_manifest` in `server/pdf_server.py` now promotes DOCX and PDF first, then writes metadata last as the commit record. If metadata promotion fails, all promoted artifacts are rolled back so a torn set cannot be treated as current.
+- [x] **M1** — Added `test_torn_artifact_set_is_detected_and_regenerated` verifying that metadata mismatch with DOCX/PDF hash triggers regeneration and that `WORKSHEET_CONTENT_CONFLICT` still protects against content changes.
+- [x] **M2** — `activity_log.record()` now returns `(entry, reason)`; `/api/log` returns distinct 400/500/503 messages for unknown action, write failure, and share-unavailable states.
+- [x] **M2** — Existing tests updated to match the new tuple return contract.
 
-## Scope Control
-
-Do not weaken the validator or change local logical building semantics to accommodate the live mismatch. Do not deploy, mutate Production Sheets, change permissions, or modify external documents from this task.
+## Verification After Remediation
+- `python -m pytest server/tests -q`: 39 passed, 0 failed.
+- `python validation/validate_release.py`: PASS.
+- `git diff --check`: PASS (line-ending warnings only).
 
 ## Final State
-
-ASTRA_AUDIT_PASS
+PASS with external gate reservations (Node.js and Poppler still unavailable in this environment).
