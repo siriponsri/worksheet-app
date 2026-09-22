@@ -21,6 +21,7 @@ import tempfile
 import hashlib
 import socket
 import threading
+import uuid
 from contextlib import contextmanager
 
 from datetime import datetime
@@ -1077,23 +1078,42 @@ def _archive_existing_share_version(workflow, worksheet_no, pdf_id):
         _copy_verified(source, os.path.join(history_root, filename), expected)
 
 
-def _stage_share_artifacts(artifacts):
-    """Copy local conversion results to same-share staging files and verify them."""
-    staged = []
+def _unique_share_stage_path(destination):
+    """Return a unique staging path on the same volume as the final file.
+
+    Promotion uses os.replace(), which on Windows raises WinError 17
+    (ERROR_NOT_SAME_DEVICE / errno EXDEV) when source and destination are on
+    different logical volumes. Staging the generated artifact next to its
+    final controlled name keeps every promotion inside one volume.
+    """
+    return os.path.join(
+        os.path.dirname(destination),
+        f'.{os.path.basename(destination)}.{uuid.uuid4().hex}.part'
+    )
+
+
+def _stage_share_artifact(source, destination):
+    """Copy one generated artifact to a verified same-volume staging file.
+
+    The staged file is uniquely named so a crashed or concurrent publisher can
+    never reuse or clobber it. Existence, size and content hash are verified
+    before the caller is allowed to promote it. Any partially copied staging
+    file is removed on failure.
+    """
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    temporary = _unique_share_stage_path(destination)
     try:
-        for source, destination in artifacts:
-            expected = _artifact_fingerprint(source)
-            temporary = f'{destination}.part'
-            _copy_verified(source, temporary, expected, replace=True)
-            staged.append((temporary, destination))
-        return staged
+        expected = _artifact_fingerprint(source)
+        shutil.copy2(source, temporary)
+        if not _is_nonempty_file(temporary) or _artifact_fingerprint(temporary) != expected:
+            raise OSError(f'Project share copy failed integrity check: {destination}')
+        return temporary, destination, expected
     except Exception:
-        for temporary, _destination in staged:
-            try:
-                if os.path.exists(temporary):
-                    os.remove(temporary)
-            except OSError:
-                pass
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except OSError:
+            pass
         raise
 
 
@@ -1224,11 +1244,18 @@ def _preserve_existing_share_artifacts(manifest):
 
 
 def _publish_manifest(manifest):
-    """Publish the complete DOCX/PDF/manifest set to the Share atomically.
+    """Publish the complete DOCX/PDF/manifest set to the Share.
 
-    DOCX and PDF are promoted first; the metadata file is written last as the
-    commit record. If metadata promotion fails, the DOCX/PDF changes are rolled
-    back so a torn set can never be treated as the current worksheet version.
+    Generated artifacts live in the local OS temp directory while the Share is
+    a different logical volume, so a file must never be moved directly from
+    one to the other (Windows WinError 17 / errno EXDEV). Every artifact is
+    first copied to a uniquely named staging file in the same directory as its
+    final controlled name, verified for existence, size and content hash, and
+    only then promoted with same-volume os.replace() calls. DOCX and PDF are
+    promoted first; the metadata file is written last as the commit record.
+    If any step fails, every promotion is rolled back so a torn set can never
+    be treated as the current worksheet version. Leftover staging files carry
+    hidden unique .part names that no reader treats as a valid document.
     """
     if not _ensure_project_share():
         raise OSError('Project share is unavailable')
@@ -1256,26 +1283,18 @@ def _publish_manifest(manifest):
     promoted = []
     try:
         with BACKUP_LOCK:
-            # Stage every byte first. A failed copy cannot disturb the current
-            # worksheet version on the share.
+            # Stage and verify every byte on the Share volume first. All staging
+            # is same-volume, so a failed copy or a disappeared share cannot
+            # disturb the current worksheet version.
             for source, destination in data_artifacts + [(commit_source, commit_destination)]:
-                os.makedirs(os.path.dirname(destination), exist_ok=True)
-                temporary = f'{destination}.part'
-                try:
-                    if os.path.exists(temporary):
-                        os.remove(temporary)
-                except OSError:
-                    pass
-                expected = _artifact_fingerprint(source)
-                shutil.copy2(source, temporary)
-                if _artifact_fingerprint(temporary) != expected:
-                    raise OSError(f'Project share copy failed integrity check: {destination}')
-                staged.append((temporary, destination))
+                staged.append(_stage_share_artifact(source, destination))
 
             _preserve_existing_share_artifacts(manifest)
 
-            # Promote DOCX and PDF first.
-            for temporary, destination in data_artifacts:
+            # Promote DOCX and PDF first; every move is within one volume.
+            for temporary, destination, _expected in staged:
+                if destination == commit_destination:
+                    continue
                 backup = f'{destination}.rollback'
                 if os.path.exists(backup):
                     os.remove(backup)
@@ -1286,7 +1305,7 @@ def _publish_manifest(manifest):
                 promoted.append(destination)
 
             # Metadata is the commit record: promote it only after DOCX/PDF.
-            commit_temporary = next(temporary for temporary, destination in staged if destination == commit_destination)
+            commit_temporary = next(temporary for temporary, destination, _expected in staged if destination == commit_destination)
             commit_backup = f'{commit_destination}.rollback'
             if os.path.exists(commit_backup):
                 os.remove(commit_backup)
@@ -1309,15 +1328,12 @@ def _publish_manifest(manifest):
                     os.replace(backup, destination)
             except OSError:
                 pass
-        for temporary, _destination in staged:
-            try:
-                if os.path.exists(temporary):
-                    os.remove(temporary)
-            except OSError:
-                pass
         raise
     finally:
-        for temporary, _destination in staged:
+        # The Share can disappear mid-operation; cleanup is best-effort.
+        # Remaining files carry unique hidden .part names that are never read
+        # as controlled documents.
+        for temporary, _destination, _expected in staged:
             try:
                 if os.path.exists(temporary):
                     os.remove(temporary)
