@@ -11,6 +11,9 @@ vite.config.js
 vite.config.d.ts
 pdfs/
 words/
+history/
+.locks/
+manifests/
 .playwright-cli/
 .pytest_cache/
 __pycache__/

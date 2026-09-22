@@ -28,7 +28,7 @@ where pnpm >nul 2>&1
 if errorlevel 1 goto :no_pnpm
 
 echo [1/2] Installing dependencies...
-call pnpm install --no-frozen-lockfile
+call pnpm install --frozen-lockfile
 if errorlevel 1 goto :install_failed
 
 echo.

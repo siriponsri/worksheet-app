@@ -22,7 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'inventory_catalog.pdf'
 OUTPUT = ROOT / 'apps' / 'web' / 'public' / 'catalog'
-THUMBNAILS = OUTPUT / 'thumbnails'
+REVIEW_OUTPUT = ROOT / 'output' / 'inventory-review'
+THUMBNAILS = REVIEW_OUTPUT / 'thumbnails'
 EXPECTED_SHA256 = 'F6DDDE2826C1DE34873FCCAB883F075788022C42565DBBC6D80E7F1EAA5BC71C'
 EXPECTED_PAGES = 16
 EXPECTED_ROWS = 95
@@ -202,7 +203,7 @@ def build() -> None:
             path.replace(target)
     manifest = payload(items)
     write_json(OUTPUT / 'inventory-index.json', manifest)
-    write_json(OUTPUT / 'manifest.json', {
+    write_json(REVIEW_OUTPUT / 'manifest.json', {
         'schemaVersion': 1,
         'index': 'inventory-index.json',
         'thumbnailPattern': 'thumbnails/page-{page:02d}.jpg',
@@ -223,8 +224,8 @@ def build() -> None:
         '- OCR provenance: Tesseract `tha+eng` was run offline, then every required field was visually reviewed\n'
         '- OCR policy: developer build/review only; runtime OCR is disabled\n'
     )
-    (OUTPUT / 'VERIFICATION.md').write_text(report, encoding='utf-8', newline='\n')
-    verify()
+    (REVIEW_OUTPUT / 'VERIFICATION.md').write_text(report, encoding='utf-8', newline='\n')
+    verify(require_review_artifacts=True)
 
 
 def validate_source() -> None:
@@ -238,14 +239,12 @@ def validate_source() -> None:
         raise RuntimeError(f'Expected {EXPECTED_PAGES} pages, got {actual_pages}')
 
 
-def verify() -> None:
+def verify(*, require_review_artifacts: bool = False) -> None:
     validate_source()
     index_path = OUTPUT / 'inventory-index.json'
-    manifest_path = OUTPUT / 'manifest.json'
-    if not index_path.is_file() or not manifest_path.is_file():
-        raise RuntimeError('Catalog assets are missing; run the build first')
+    if not index_path.is_file():
+        raise RuntimeError('Catalog index is missing; run the build first')
     index = json.loads(index_path.read_text(encoding='utf-8'))
-    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     items = index.get('items', [])
     errors = []
     if index != payload(records()):
@@ -262,20 +261,23 @@ def verify() -> None:
         missing = [key for key in ('materialCode', 'name', 'unit', 'page') if not item.get(key)]
         if missing or item.get('reviewed') is not True:
             errors.append(f"row {item.get('sequence')} unresolved/unreviewed: {', '.join(missing) or 'reviewed'}")
-    if manifest.get('runtimeOcr') is not False or manifest.get('reviewStatus') != 'human-reviewed':
-        errors.append('manifest must disable runtime OCR and declare human review')
-    if (
-        manifest.get('sourceSha256') != EXPECTED_SHA256
-        or manifest.get('pageCount') != EXPECTED_PAGES
-        or manifest.get('rowCount') != EXPECTED_ROWS
-    ):
-        errors.append('manifest source hash, page count, and row count must remain pinned')
-    thumbnails = sorted(THUMBNAILS.glob('page-*.jpg'))
-    expected_thumbnails = [THUMBNAILS / f'page-{page:02d}.jpg' for page in range(1, EXPECTED_PAGES + 1)]
-    if thumbnails != expected_thumbnails or any(path.stat().st_size == 0 for path in thumbnails):
-        errors.append(f'exactly {EXPECTED_PAGES} non-empty thumbnails are required')
-    if not (OUTPUT / 'VERIFICATION.md').is_file():
-        errors.append('VERIFICATION.md is missing')
+    if require_review_artifacts:
+        manifest_path = REVIEW_OUTPUT / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.is_file() else {}
+        if manifest.get('runtimeOcr') is not False or manifest.get('reviewStatus') != 'human-reviewed':
+            errors.append('review manifest must disable runtime OCR and declare human review')
+        if (
+            manifest.get('sourceSha256') != EXPECTED_SHA256
+            or manifest.get('pageCount') != EXPECTED_PAGES
+            or manifest.get('rowCount') != EXPECTED_ROWS
+        ):
+            errors.append('review manifest source hash, page count, and row count must remain pinned')
+        thumbnails = sorted(THUMBNAILS.glob('page-*.jpg'))
+        expected_thumbnails = [THUMBNAILS / f'page-{page:02d}.jpg' for page in range(1, EXPECTED_PAGES + 1)]
+        if thumbnails != expected_thumbnails or any(path.stat().st_size == 0 for path in thumbnails):
+            errors.append(f'exactly {EXPECTED_PAGES} non-empty review thumbnails are required')
+        if not (REVIEW_OUTPUT / 'VERIFICATION.md').is_file():
+            errors.append('review VERIFICATION.md is missing')
     if errors:
         raise RuntimeError('\n'.join(errors))
     print(f'Verified {EXPECTED_ROWS} reviewed rows across {EXPECTED_PAGES} pages.')

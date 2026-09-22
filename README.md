@@ -16,7 +16,7 @@ from the five approved DOCX templates.
    Flask on the first available loopback port, waits for `/api/status`, and
    opens that actual port in the browser.
 
-For development, run `pnpm install`, `pnpm dev`, and `START-SERVER.bat` in
+For development, run `pnpm install --frozen-lockfile`, `pnpm dev`, and `START-SERVER.bat` in
 separate terminals as needed. `START-SERVER.bat` requires
 `ANF3_PROJECT_SHARE`; it never falls back to the checkout or Local AppData for
 controlled storage.
@@ -50,10 +50,10 @@ Worksheet format is `<PREFIX>-YY-<B10|B12|B16|OT>-####`.
 
 See these active contracts for details:
 
-- `docs/CABINET_WORKFLOW_MATRIX.md` - building and binder routing.
+- `apps/web/src/appData.ts` - typed workflow, building, and binder registry; the cabinet matrix documents its expected behavior.
+- `docs/CABINET_WORKFLOW_MATRIX.md` - building and binder routing contract.
 - `docs/CV_TEMPLATE_ROUTING_CONTRACT.md` - CV method/template routing.
 - `docs/APPS_SCRIPT_6_FILE_CONTRACT.md` - six Apps Script project bundles.
-- `docs/GOAL.md` - release acceptance criteria.
 - `OWNER_DEPLOYMENT.md` - owner-only Apps Script update checklist.
 
 ## Verification

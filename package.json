@@ -11,20 +11,16 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@fontsource/bai-jamjuree": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans-thai": "^5.2.7",
     "@fontsource/maitree": "^5.3.0",
-    "@playwright/mcp": "^0.0.80",
-    "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.7.0",
-    "@vitejs/plugin-react": "latest",
-    "lucide-react": "latest",
+    "lucide-react": "1.41.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "print-js": "^1.6.0",
-    "react": "latest",
-    "react-dom": "latest",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "react-router-dom": "^7.9.5",
     "three": "^0.185.1"
   },
@@ -35,8 +31,9 @@
     "@types/react-dom": "^19.2.5",
     "@types/three": "^0.185.0",
     "playwright": "^1.62.1",
-    "typescript": "latest",
-    "vite": "latest",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
     "vitest": "^4.0.7"
   }
 }

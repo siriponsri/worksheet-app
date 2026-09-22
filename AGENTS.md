@@ -22,7 +22,7 @@ serve retired root HTML or vanilla JavaScript pages.
 ## Commands
 
 ```powershell
-pnpm install
+pnpm install --frozen-lockfile
 pnpm check
 pnpm test
 pnpm build

@@ -14,7 +14,7 @@ if errorlevel 1 (
 
 if not exist "%APP_DIR%node_modules" (
   echo [INFO] Installing frontend dependencies...
-  pnpm install --no-frozen-lockfile
+  pnpm install --frozen-lockfile
   if errorlevel 1 exit /b 1
 )
 

@@ -1,6 +1,9 @@
 # Cabinet Workflow Matrix — Implementation Source of Truth
 
-This document defines which binders exist. Luna must encode the same data once in a typed configuration and derive Cabinet view, List view, routes, filters, tests, and accessibility labels from it.
+This document defines the expected binder behavior. The active React registry
+in `apps/web/src/appData.ts` is the source of truth; Cabinet view, List view,
+routes, filters, tests, and accessibility labels derive from that typed
+configuration. This matrix is a human-readable contract checked against it.
 
 ## Building registry
 

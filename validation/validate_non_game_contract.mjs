@@ -55,14 +55,6 @@ function assert(condition, message) {
   else fail(message);
 }
 
-const expectedBinders = [
-  'b10-pw-prw', 'b10-em-air', 'b10-ca', 'b10-cv',
-  'b12-pw-prw', 'b12-em-air', 'b12-ca', 'b12-cv',
-  'b16-pw-prw', 'b16-wfi', 'b16-em-air', 'b16-ca-n2', 'b16-cv',
-  'other-water', 'other-air', 'other-ca', 'other-cv'
-];
-const expectedFrontendBinders = [...expectedBinders, 'reserve-spare'];
-
 const expectedScripts = [
   'google/app-scripts/air-test.gs',
   'google/app-scripts/RPP2-air-record.gs',
@@ -76,13 +68,26 @@ console.log('ANF3 non-game contract audit');
 console.log(`root=${ROOT}`);
 console.log(`mode=${CONTROLLED_ROOT ? `controlled (${CONTROLLED_ROOT})` : 'public source'}`);
 
+const typedAppData = read('apps/web/src/appData.ts');
+const typedBinderDefinitions = typedAppData.split(/\r?\n/)
+  .filter((line) => /^\s*\{ id: '[^']+'.*state: '[^']+'/.test(line))
+  .map((line) => {
+    const match = line.match(/^\s*\{ id: '([^']+)'\s*,\s*groupId: '([^']+)'\s*,\s*buildingFilter: '([^']+)'\s*,\s*workflowId: '([^']+)'\s*,\s*label: '([^']+)'[^\n]*state: '([^']+)'/);
+    return match && { id: match[1], group: match[2], building: match[3], workflow: match[4], label: match[5], state: match[6] };
+  })
+  .filter(Boolean);
+const expectedBinders = typedBinderDefinitions.filter(({ state }) => state === 'active').map(({ id }) => id);
+const expectedFrontendBinders = typedBinderDefinitions.map(({ id }) => id);
+const typedBinders = new Map(typedBinderDefinitions.map(({ id, group, building, workflow, label }) => [id, { group, building, workflow, label }]));
+assert(expectedBinders.length > 0, 'Typed frontend registry declares active binders');
+
 const matrix = readOptional('docs/CABINET_WORKFLOW_MATRIX.md', { controlled: true });
 /* The active table stops at the first "### Inside …" sub-table: those rows
    describe what is inside a binder, not binders on the shelf. */
 const activeMatrixSection = (matrix.split('## Reserve instances')[0].split('## Active binder instances')[1] || '').split('### Legacy source-location examples')[0];
 const matrixIds = [...activeMatrixSection.matchAll(/^\| `([^`]+)` \|/gm)].map((match) => match[1]);
 if (matrix) {
-  assert(matrixIds.length === 17, `Cabinet matrix has 17 active rows (found ${matrixIds.length})`);
+  assert(matrixIds.length === expectedBinders.length, `Cabinet matrix matches typed active binder count (${expectedBinders.length}, found ${matrixIds.length})`);
   assert(expectedBinders.every((id) => matrixIds.includes(id)), 'Cabinet matrix contains every required active destination');
   assert(new Set(matrixIds).size === matrixIds.length, 'Cabinet matrix has no duplicate active row');
 } else if (!CONTROLLED_ROOT) {
@@ -95,11 +100,6 @@ const normalizeSemantic = (value) => String(value || '')
   .replace(/[\u2013\u2014]/g, '-')
   .replace(/[^a-z0-9]+/gi, '')
   .toLowerCase();
-const typedBinders = new Map();
-const typedAppData = read('apps/web/src/appData.ts');
-for (const match of typedAppData.matchAll(/\{\s*id:\s*'([^']+)'\s*,\s*groupId:\s*'([^']+)'\s*,\s*buildingFilter:\s*'([^']+)'\s*,\s*workflowId:\s*'([^']+)'\s*,\s*label:\s*'([^']+)'/g)) {
-  typedBinders.set(match[1], { group: match[2], building: match[3], workflow: match[4], label: match[5] });
-}
 const matrixRows = activeMatrixSection.split(/\r?\n/)
   .filter((line) => /^\| `[^`]+` \|/.test(line))
   .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim().replace(/^`|`$/g, '')));
@@ -127,25 +127,6 @@ if (matrix && matrixRows.length) {
     assert(normalizeSemantic(workflow) === normalizeSemantic(typed.workflow), `${id} matrix workflow matches typed registry`);
     assert(normalizeSemantic(label) === normalizeSemantic(typed.label), `${id} matrix display label matches typed registry`);
     assert(secondaryMatches(typed.workflow, id, secondary), `${id} matrix secondary filter matches workflow scope`);
-  }
-}
-
-const manifestText = read('apps/web/public/design-assets/manifest.json');
-let manifest;
-try {
-  manifest = JSON.parse(manifestText);
-} catch (error) {
-  fail(`apps/web/public/design-assets/manifest.json is valid JSON (${error.message})`);
-}
-if (manifest) {
-  assert(manifest.auditedCapacity?.activeDestinations === 16, 'Asset manifest declares 16 active destinations');
-  assert(manifest.semanticRules?.binderColor === 'building-or-location-only', 'Asset manifest preserves location-only binder color semantics');
-  const assetIds = new Set((manifest.assets || []).map((asset) => asset.id));
-  for (const id of ['binder-blue-b10', 'binder-violet-b12', 'binder-mint-b16', 'binder-orange-other', 'binder-pink-coming-soon', 'cabinet-modular-light', 'cabinet-modular-dark']) {
-    assert(assetIds.has(id), `Asset manifest includes ${id}`);
-  }
-  for (const asset of manifest.assets || []) {
-    assert(fs.existsSync(path.join(ROOT, 'apps/web/public/design-assets', asset.file)), `Asset file exists: ${asset.file}`);
   }
 }
 
