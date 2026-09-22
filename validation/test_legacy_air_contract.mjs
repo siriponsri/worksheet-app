@@ -66,4 +66,14 @@ for (const [file, workflow] of files.filter(([file]) => file.endsWith('.js'))) {
   ]);
   await assert.rejects(() => repeated.fetchPages('https://example.test/exec', workflow), /repeated cursor/);
 }
+
+const airSync = fs.readFileSync('google/app-scripts/air-test.gs', 'utf8');
+assert.match(airSync, /samplingMode:\s*normalizeSamplingMode_\(row\[c\.method\]\)/,
+  'Air sync must carry the source Method into each EM sample samplingMode');
+assert.match(airSync, /token === 'settleplate' \|\| token === 'passive'.*return 'passive'/s,
+  'Settle Plate/passive source methods must normalize to passive');
+assert.match(airSync, /token === 'activeair' \|\| token === 'active'.*return 'active'/s,
+  'Active Air/active source methods must normalize to active');
+assert.match(airSync, /return '';/,
+  'Unknown Air methods must remain blank rather than being fabricated');
 console.log('Legacy Air logical-routing and numeric contracts passed');

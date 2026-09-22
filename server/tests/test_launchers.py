@@ -16,11 +16,11 @@ def start_server():
     return (ROOT / 'START-SERVER.bat').read_text(encoding='utf-8')
 
 
-def test_start_anf3_derives_share_root_without_hard_coded_drive(start_anf3):
-    """The launcher must derive the durable share root from its own directory
-    so it works with any mapped drive letter, username, or path containing spaces."""
-    assert 'set "SHARE_ROOT=%~dp0"' in start_anf3
-    assert 'set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"' in start_anf3 or 'set "ANF3_PROJECT_SHARE=%~dp0"' in start_anf3
+def test_start_anf3_never_promotes_local_copy_to_controlled_storage(start_anf3):
+    """A local AppData launcher must require an explicit project share."""
+    assert 'set "SHARE_ROOT=%APP_DIR%"' in start_anf3
+    assert 'no configured project share' in start_anf3
+    assert 'set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"' in start_anf3
     assert 'T:\\' not in start_anf3
     assert 'T:/' not in start_anf3
 

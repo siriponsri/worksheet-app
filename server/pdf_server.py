@@ -1927,7 +1927,10 @@ def status():
         'libreOffice': LIBREOFFICE_PATH is not None,
         'converterAvailable': converter_available,
         'converterName': converter_name,
+        'projectShareConfigured': bool(PROJECT_SHARE_ROOT),
         'projectShareAvailable': bool(PROJECT_SHARE_ROOT and os.path.isdir(PROJECT_SHARE_ROOT)),
+        'projectSharePath': os.path.abspath(PROJECT_SHARE_ROOT) if PROJECT_SHARE_ROOT else None,
+        'controlledStorage': 'project-share',
         'folders': FORM_FOLDERS
     })
 

@@ -237,6 +237,7 @@ function buildEMSamples_(items, c) {
       samplingPoint: roomNo,
       noLocation: roomNo,
       location: text_(row[c.roomName]),
+      samplingMode: normalizeSamplingMode_(row[c.method]),
       floor: text_(row[c.floor]),
       grade: text_(row[c.grade]),
       tempRoom: naIfBlank_(row[c.temp]),
@@ -457,6 +458,14 @@ function formatTime_(value) {
 }
 
 function naIfBlank_(value) { const v = text_(value); return v === '' ? 'N/A' : v; }
+// The source workbook's Method values are the only authoritative mode labels.
+// Unknown/blank values remain blank so historical records are not fabricated.
+function normalizeSamplingMode_(value) {
+  const token = text_(value).toLowerCase().replace(/[\s_-]+/g, '');
+  if (token === 'settleplate' || token === 'passive') return 'passive';
+  if (token === 'activeair' || token === 'active') return 'active';
+  return '';
+}
 function norm_(value) { return String(value || '').toLowerCase().replace(/[\s._%-]+/g, ''); }
 function text_(value) { return value === null || value === undefined ? '' : String(value).trim(); }
 function isBlank_(value) { return value === '' || value === null || value === undefined; }

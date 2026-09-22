@@ -607,7 +607,6 @@ function BatchPreview({ workflow, items, drafts, presetMethod, onRenderComplete,
   const pages = keep.reduce((sum, part) => sum + part.pageCount, 0);
   const running = !render && !failed;
   const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
-  const stamp = new Date().toISOString().slice(0, 10);
 
   const reviewReplacement = async (conflict: BatchConflict) => {
     const item = batchItems.find((candidate) => candidate.recordKey === conflict.recordKey);
@@ -694,7 +693,9 @@ function BatchPreview({ workflow, items, drafts, presetMethod, onRenderComplete,
       if (what === 'download') {
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = `anf3-${workflow.id}-${stamp}.pdf`;
+        anchor.download = keep.length === 1
+          ? `${keep[0].worksheetNo}.pdf`
+          : `ANF3-BATCH-${keep[0].worksheetNo}-to-${keep[keep.length - 1].worksheetNo}.pdf`;
         anchor.click();
         logEvent('pdf_downloaded', { detail: `${keep.length} ใบ · ${pages} หน้า` });
         setTimeout(() => URL.revokeObjectURL(url), 60000);

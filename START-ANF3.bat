@@ -12,10 +12,10 @@ rem ===========================================================================
 
 title ANF3 Laboratory Records
 set "APP_DIR=%~dp0"
-rem The directory this launcher lives in is the release master / project share.
-rem Pass it to the server so controlled documents and logs land on the share
-rem regardless of whether this PC later runs from a local copy.
-set "SHARE_ROOT=%~dp0"
+rem Only a release launched from the shared package may derive its durable
+rem root from the launcher directory. A local AppData copy must receive an
+rem explicit share root; it must never become controlled storage implicitly.
+set "SHARE_ROOT="
 set "LOCAL_DIR=%LOCALAPPDATA%\ANF3-Laboratory-Records\"
 set "LOCK_HELD="
 set "FOUND="
@@ -42,7 +42,18 @@ if /i "%~1"=="/here" (
   set "APP_DIR=%LOCAL_DIR%"
   goto :run_here
 )
-if /i "%APP_DIR%"=="%LOCAL_DIR%" goto :run_here
+if /i "%APP_DIR%"=="%LOCAL_DIR%" (
+  if not defined ANF3_PROJECT_SHARE (
+    echo.
+    echo [ERROR] This local ANF3 copy has no configured project share.
+    echo        Start the release launcher from the shared package, or set
+    echo        ANF3_PROJECT_SHARE before running the local copy.
+    pause
+    exit /b 1
+  )
+  goto :run_here
+)
+set "SHARE_ROOT=%APP_DIR%"
 
 echo.
 echo ANF3 Laboratory Records
@@ -158,9 +169,8 @@ if not exist "%APP_DIR%.venv\Scripts\python.exe" (
 )
 
 echo.
-rem Normal and disconnected-share paths use the original release directory as
-rem the durable root. /here developer mode must have set ANF3_PROJECT_SHARE
-rem explicitly before reaching this point.
+rem Normal release paths use the shared package as the durable root. /here
+rem developer mode and local-copy paths must have supplied it explicitly.
 if not defined ANF3_PROJECT_SHARE set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"
 echo [INFO] Starting the local ANF3 service...
 echo          Project share: %ANF3_PROJECT_SHARE%
