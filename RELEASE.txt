@@ -1,5 +1,5 @@
 Package: ANF3-Laboratory-Records-20260911
-Version: 7.1aa
+Version: 7.1ae
 Built: 2026-09-11 02:37:13 +0700
 
 Run it:  double-click START-ANF3.bat
@@ -7,3 +7,4 @@ Quality per PC: the "ตั้งค่าเครื่องนี้" tab in
 Check a PC: open tools/ANF3-CHECK-THIS-PC.html on it
 
 Read first: README.md
+Port: START-ANF3.bat selects the first available loopback port and opens it

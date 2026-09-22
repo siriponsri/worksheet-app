@@ -1,5 +1,6 @@
 import json
 import re
+import socket
 import subprocess
 import sys
 import zipfile
@@ -15,23 +16,15 @@ import pdf_server
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     template_dir = tmp_path / 'templates'
-    cache_dir = tmp_path / 'cache'
-    words_dir = cache_dir / 'words'
-    pdfs_dir = cache_dir / 'pdfs'
     share_dir = tmp_path / 'project-share'
     template_dir.mkdir()
-    words_dir.mkdir(parents=True)
-    pdfs_dir.mkdir(parents=True)
     desktop_dir = tmp_path / 'home' / 'Desktop'
     desktop_dir.mkdir(parents=True)
     for template_name in pdf_server.WORKFLOW_TEMPLATES.values():
         (template_dir / template_name).write_bytes(b'template-' + template_name.encode())
 
     monkeypatch.setattr(pdf_server, 'TEMPLATE_DIR', str(template_dir))
-    monkeypatch.setattr(pdf_server, 'WORDS_DIR', str(words_dir))
-    monkeypatch.setattr(pdf_server, 'PDFS_DIR', str(pdfs_dir))
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share_dir))
-    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(tmp_path / 'pending'))
     pdf_server.activity_log.configure_project_share(str(share_dir))
     monkeypatch.setattr(pdf_server.os.path, 'expanduser', lambda _value: str(tmp_path / 'home'))
 
@@ -76,7 +69,7 @@ def test_pdf_id_lifecycle_and_content_template_cache(client, monkeypatch):
     metadata = client.get(f"/api/pdfs/{created['pdfId']}")
     assert metadata.status_code == 200
     assert metadata.get_json()['filename'] == 'PW-26-0001.pdf'
-    assert str(pdf_server.PDFS_DIR) not in metadata.get_data(as_text=True)
+    assert '/pdfs/' not in metadata.get_data(as_text=True)
 
     download = client.get(f"/api/pdfs/{created['pdfId']}/download")
     assert download.status_code == 200
@@ -90,11 +83,22 @@ def test_pdf_id_lifecycle_and_content_template_cache(client, monkeypatch):
     assert saved.status_code == 410
 
 
+def test_pick_free_port_skips_an_already_listening_foreign_port():
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    occupied.bind(('127.0.0.1', 0))
+    occupied.listen(1)
+    try:
+        port = occupied.getsockname()[1]
+        selected = pdf_server._pick_free_port('127.0.0.1', port, span=2)
+        assert selected == port + 1
+    finally:
+        occupied.close()
+
+
 def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, monkeypatch):
     share = tmp_path / 'project-share'
-    spool = tmp_path / 'pending'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(share))
-    monkeypatch.setattr(pdf_server, 'BACKUP_SPOOL_DIR', str(spool))
     monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0090', 'data': {'analyst': 'A'}}
 
@@ -113,7 +117,6 @@ def test_project_share_backup_is_hash_verified_and_idempotent(client, tmp_path, 
     second = client.post('/api/pdfs', json=payload)
     assert second.status_code == 200
     assert second.get_json()['backup']['status'] == 'succeeded'
-    assert not list(spool.glob('*.json'))
 
 
 def test_project_share_replacement_keeps_old_version_in_history(client, tmp_path, monkeypatch):
@@ -141,14 +144,13 @@ def test_project_share_replacement_keeps_old_version_in_history(client, tmp_path
 def test_project_share_outage_does_not_leave_local_controlled_artifacts(client, tmp_path, monkeypatch):
     blocked = tmp_path / 'share-is-a-file'
     blocked.write_text('unavailable', encoding='utf-8')
-    share = tmp_path / 'project-share'
     monkeypatch.setattr(pdf_server, 'PROJECT_SHARE_ROOT', str(blocked))
     monkeypatch.setattr(pdf_server.activity_log, 'record', lambda **_kwargs: ({'action': 'test'}, None))
     payload = {'workflow': 'pw-prw', 'worksheetNo': 'PW-26-0091', 'data': {'analyst': 'A'}}
 
     created = client.post('/api/pdfs', json=payload)
     assert created.status_code == 503
-    assert not [path for path in (tmp_path / 'cache').rglob('*') if path.is_file()]
+    assert not (tmp_path / 'cache').exists()
 
 
 def test_project_share_replaces_corrupt_primary_for_same_content(client, tmp_path, monkeypatch):
@@ -245,10 +247,12 @@ def test_pdf_capabilities_keep_cv_routes_explicit_and_safe(client):
     assert 'path' not in response.get_data(as_text=True).lower()
 
 
-def test_legacy_path_apis_are_gone(client):
+def test_retired_path_apis_are_not_available(client):
     assert client.post('/api/convert-word-to-pdf', json={
         'wordPath': 'C:/secret.docx'
     }).status_code == 410
+    assert client.get('/api/check-pdf').status_code == 410
+    assert client.post('/api/preview-pdf', json={}).status_code == 410
     assert client.get('/api/list-files').status_code == 410
 
 

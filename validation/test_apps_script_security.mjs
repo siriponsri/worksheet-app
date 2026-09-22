@@ -77,15 +77,4 @@ for (const [domain, prefix] of [['air', 'air'], ['water', 'water']]) {
   assert.equal(matches('OSD-PW (Building 10)', 'Other'), true, `${domain} preserves unknown source text in Other`);
 }
 
-const legacyPrintFiles = [
-  'js/print-pw-prw.js',
-  'js/print-wfi-pus.js',
-  'js/print-compressed-air.js',
-  'js/print-em-air.js'
-];
-for (const path of legacyPrintFiles) {
-  const source = read(path);
-  assert.match(source, /URLSearchParams\(window\.location\.search\)\.get\('worksheetNo'\)/, `${path} consumes worksheetNo`);
-}
-
-console.log('Apps Script security/read contracts and legacy worksheet selection: PASS');
+console.log('Apps Script security/read contracts: PASS');

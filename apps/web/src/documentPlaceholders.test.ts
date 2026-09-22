@@ -5,9 +5,9 @@
    it. A key that is never sent is not blanked — the loop never visits it — so
    the literal token survives into the DOCX and onto printed paper.
 
-   That failure is invisible from the code: `validate_cv_package.py` asserts
-   the TEMPLATE contains `<gradeControl>`, and it does, but nothing asserted
-   the PAYLOAD could fill it. It printed `<gradeControl>` on every Cleaning
+   That failure is invisible from the code: a template-only check can assert
+   that the TEMPLATE contains `<gradeControl>`, but nothing proves the PAYLOAD
+   can fill it. It printed `<gradeControl>` on every Cleaning
    Validation Contact worksheet until v7.2, and `<floor>` on every EM Air one,
    and both were found by reading a printed page rather than by any gate.
 

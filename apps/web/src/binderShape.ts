@@ -15,7 +15,7 @@
    at all. Each shape below changes width, furniture and proportion together,
    the way the real object does.
 
-   Sources for the format differences are listed in DESIGN.md § v7.1m.
+   Sources for the format differences are listed in docs/CABINET_WORKFLOW_MATRIX.md.
 
    Like the colours, the choice is per browser and never leaves it: it changes
    how the shelf looks, never what a binder means. The building hue, the spine

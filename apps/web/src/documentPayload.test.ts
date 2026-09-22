@@ -78,8 +78,8 @@ describe('documentPayload', () => {
     });
   });
 
-  /* Counts carry the same semantics as formatResultValue() in js/utils.js, so
-     one worksheet reads the same whichever path printed it. */
+  /* Counts use the same rounding and detection-limit semantics in every
+     document route. */
   describe('numbers', () => {
     it('rounds a count up and reports a genuine zero as the detection limit', () => {
       const payload = documentPayload('pw-prw', {}, [{ result1: 2.1, result2: 0, resultAvg: 1.05 }], 'WP-26-0001');

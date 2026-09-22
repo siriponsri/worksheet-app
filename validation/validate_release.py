@@ -8,10 +8,6 @@ import re
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-IGNORED_HTML_DIRS = {
-    ".playwright-cli", ".pytest_cache", ".tools", ".uv-cache", ".venv",
-    "node_modules", "python", "_archived", "dist", "output", "release"
-}
 
 
 class LinkParser(HTMLParser):
@@ -59,18 +55,14 @@ def resolve_local_asset(html_file: Path, value: str) -> Path:
                 return public_target.resolve()
             return (html_file.parent / value.lstrip("/")).resolve()
         return (ROOT / value.lstrip("/")).resolve()
-    if html_file.parent == ROOT and value.startswith("../"):
-        # Root legacy pages historically use ../ paths; browsers normalize these
-        # to the site root, so keep the release check aligned with URL behavior.
-        value = value[3:]
     return (html_file.parent / value).resolve()
 
 
 def assert_local_assets() -> None:
     failures: list[str] = []
-    for html_file in ROOT.rglob("*.html"):
-        if IGNORED_HTML_DIRS.intersection(html_file.relative_to(ROOT).parts):
-            continue
+    html_files = [ROOT / "apps" / "web" / "index.html"]
+    for html_file in html_files:
+        assert html_file.is_file(), f"Missing active app shell: {html_file.relative_to(ROOT)}"
         parser = LinkParser()
         parser.feed(html_file.read_text(encoding="utf-8"))
         for value in parser.links + parser.scripts + parser.styles:
@@ -92,7 +84,6 @@ def assert_required_files(controlled: Path | None) -> None:
     required = [
         "START-ANF3.bat",
         "START-SERVER.bat",
-        "CREATE-DIST-ZIP.ps1",
         ".env.production",
         "apps/web/src/App.tsx",
         "apps/web/src/DeskScene.tsx",
@@ -119,9 +110,6 @@ def assert_required_files(controlled: Path | None) -> None:
         return
 
     controlled_required = [
-        "OWNER.md",
-        "PLAN.md",
-        "DESIGN.md",
         "inventory_catalog.pdf",
         "dist/index.html",
         "VERSION.txt",

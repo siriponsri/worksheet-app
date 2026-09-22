@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 320" role="img" aria-labelledby="title desc">
-  <title id="title">Pink reserve binder, Coming Soon</title><desc id="desc">Disabled pink reserve binder with a static Coming Soon label and no record route.</desc>
-  <path fill="#C86A80" d="M20 13h116l10 13v278l-10 8H20l-8-9V22z"/><path fill="#ED8FA3" d="M22 16h108l9 12v270l-9 8H22l-5-6V23z"/>
-  <path fill="#FCECEF" d="M31 70h96v118H31z"/><path fill="#FFF" opacity=".35" d="M25 22h7v277h-7z"/>
-  <text x="79" y="118" text-anchor="middle" fill="#713947" font-family="Arial,sans-serif" font-size="13" font-weight="700">COMING</text><text x="79" y="139" text-anchor="middle" fill="#713947" font-family="Arial,sans-serif" font-size="13" font-weight="700">SOON</text>
-  <path d="M53 159h52" stroke="#C86A80" stroke-width="3" stroke-linecap="round"/><circle cx="79" cy="267" r="15" fill="#FCECEF"/><circle cx="79" cy="267" r="9" fill="#9B5364"/><path d="M72 267h14" stroke="#FCECEF" stroke-width="3" stroke-linecap="round"/>
-</svg>

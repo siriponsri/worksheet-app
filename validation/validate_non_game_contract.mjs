@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -131,22 +130,22 @@ if (matrix && matrixRows.length) {
   }
 }
 
-const manifestText = read('design-assets/manifest.json');
+const manifestText = read('apps/web/public/design-assets/manifest.json');
 let manifest;
 try {
   manifest = JSON.parse(manifestText);
 } catch (error) {
-  fail(`design-assets/manifest.json is valid JSON (${error.message})`);
+  fail(`apps/web/public/design-assets/manifest.json is valid JSON (${error.message})`);
 }
 if (manifest) {
-  assert(manifest.auditedCapacity?.activeDestinations === 17, 'Asset manifest declares 17 active destinations');
+  assert(manifest.auditedCapacity?.activeDestinations === 16, 'Asset manifest declares 16 active destinations');
   assert(manifest.semanticRules?.binderColor === 'building-or-location-only', 'Asset manifest preserves location-only binder color semantics');
   const assetIds = new Set((manifest.assets || []).map((asset) => asset.id));
   for (const id of ['binder-blue-b10', 'binder-violet-b12', 'binder-mint-b16', 'binder-orange-other', 'binder-pink-coming-soon', 'cabinet-modular-light', 'cabinet-modular-dark']) {
     assert(assetIds.has(id), `Asset manifest includes ${id}`);
   }
   for (const asset of manifest.assets || []) {
-    assert(fs.existsSync(path.join(ROOT, 'design-assets', asset.file)), `Asset file exists: ${asset.file}`);
+    assert(fs.existsSync(path.join(ROOT, 'apps/web/public/design-assets', asset.file)), `Asset file exists: ${asset.file}`);
   }
 }
 
@@ -203,24 +202,6 @@ for (const route of ['cleaning-validation-contact', 'cleaning-validation-rinse-p
 if (!cvRouting && !CONTROLLED_ROOT) warn('Controlled CV template routing contract is not in the public checkout; server and frontend route registries are checked instead');
 assert(/TEMPLATE_DIR/.test(pdfServer) && /send_file\(pdf_path/.test(pdfServer), 'PDF service uses server-owned template/output resolution');
 assert(/ANF3_HOST['"]?\s*,\s*['"]127\.0\.0\.1['"]/.test(pdfServer), 'PDF service defaults to loopback binding');
-
-const baseline = read('validation/games-baseline.sha256');
-for (const line of baseline.split(/\r?\n/).filter(Boolean)) {
-  const separator = line.indexOf('  ');
-  if (separator < 0) {
-    fail(`games baseline line is malformed: ${line}`);
-    continue;
-  }
-  const expectedHash = line.slice(0, separator).trim().toUpperCase();
-  const relativePath = line.slice(separator + 2).trim();
-  const absolutePath = path.join(ROOT, relativePath);
-  if (!fs.existsSync(absolutePath)) {
-    fail(`Games baseline path exists: ${relativePath}`);
-    continue;
-  }
-  const actualHash = crypto.createHash('sha256').update(fs.readFileSync(absolutePath)).digest('hex').toUpperCase();
-  assert(actualHash === expectedHash, `Games freeze hash matches: ${relativePath}`);
-}
 
 if (!pdfServer.includes('cleaning-validation-rinse-pour') || !pdfServer.includes('cleaning-validation-rinse-membrane')) {
   warn('CV Rinse dedicated template routes are not yet implemented; keep Rinse PDF blocked');

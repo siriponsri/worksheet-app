@@ -8,11 +8,9 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
  * Every date in every controlled document is date-only, `dd MMM yyyy`
  * ("01 Sep 2026").
  *
- * This used to emit `DD/MM/YYYY` while the legacy print pages emitted
- * `DD Mon YYYY` from `formatDateDMY()` in `js/utils.js` — two formats for the
- * same field on the same controlled worksheet, decided by nothing more than
- * which page printed it. This function is the React-side half of closing that
- * gap, so keep the two in step if either changes.
+ * The active document mapper must keep this format consistent across every
+ * workflow; otherwise the same field can change when a different route prints
+ * the controlled worksheet.
  *
  * A `YYYY-MM-DD` string is split rather than passed through `new Date()`: the
  * Date constructor reads a bare ISO date as UTC midnight, which in Bangkok
@@ -55,9 +53,8 @@ function date(value: unknown) {
 /**
  * A microbial count, to nought decimal places.
  *
- * These are the semantics `formatResultValue()` in `js/utils.js` has always
- * used on the legacy pages, kept here so one worksheet reads the same
- * whichever path printed it:
+ * These are the established document-mapping semantics, kept here so one
+ * worksheet reads the same whichever active workflow prints it:
  *
  *   - blank stays blank — an unfilled cell must never become a number
  *   - a genuine zero is reported as `<1`, the limit of detection, not as "0"
@@ -147,10 +144,8 @@ export function documentPayload(workflow: string, record: RecordData, samples: R
   }
   const rows = samplesOf(record, samples);
   payload.sampleCount = String(rows.length);
-  /* The floor the room is on. Record-level when it is set, otherwise taken
-     from the first sample, which is where the source sheet carries it — the
-     same derivation as `js/print-em-air.js:363`. Unfilled until now, so the EM
-     template printed the literal `<floor>` on every worksheet. */
+  /* The floor is record-level when set, otherwise taken from the first sample,
+     which is where the source sheet carries it. */
   payload.floor = text(record.floor || rows[0]?.floor);
   const limit = templateSampleCapacity(workflow);
   if (workflow === 'compressed-air') payload.tempRoom01 = measure(record.temp);

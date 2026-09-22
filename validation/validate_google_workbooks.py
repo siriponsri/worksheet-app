@@ -37,8 +37,8 @@ def main() -> None:
         "worksheetNo", "worksheetCreate", "Bld", "Sampling date", "Samp-Method",
         "Test-Method", "CV/CEHT", "Normal/ReSamp", "ครั้งที่", "syncStatus",
     ])
-    assert_headers("RPP2-cv-record.xlsx", "records_cv_contact", ["worksheetNo", "samplesJson"])
-    assert_headers("RPP2-cv-record.xlsx", "record_cv_rinse", ["worksheetNo", "samplesJson"])
+    assert_headers("RPP2-cv-record.xlsx", "records_cv_contact_B10", ["worksheetNo", "samplesJson"])
+    assert_headers("RPP2-cv-record.xlsx", "record_cv_rinse_B10", ["worksheetNo", "samplesJson"])
 
     print("Google workbook sheet/header contracts: PASS")
 

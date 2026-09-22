@@ -2443,9 +2443,7 @@ const router = createHashRouter([{
     { path: 'games/feller', element: <Navigate to="/games/bacterial-identification" replace /> },
     /* CultureCheck was removed in v7.1n — it shared six of nine phases with
        The Sixth Plate, so it was two names for one game. The path stays as a
-       redirect so an old bookmark lands on the game that replaced it. The
-       frozen legacy page at games/growth-promotion.html is a different
-       artefact and is untouched. */
+       redirect so an old bookmark lands on the replacement game. */
     { path: 'games/growth-promotion', element: <Navigate to="/games/bacterial-identification" replace /> },
     { path: '*', element: <NotFound /> }
   ]

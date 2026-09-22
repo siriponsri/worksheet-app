@@ -9,7 +9,7 @@ Version: 4.2.0 - Multi-folder support + Static Files
 ============================================
 """
 
-from flask import Flask, request, jsonify, send_file, send_from_directory, redirect, Response
+from flask import Flask, request, jsonify, send_file, Response
 import subprocess  # nosec - Used for controlled LibreOffice conversion
 import sys
 import os
@@ -48,21 +48,10 @@ INVENTORY_INDEX_PATHS = (
     os.path.join(DIST_DIR, 'catalog', 'inventory-index.json'),
     os.path.join(BASE_DIR, 'apps', 'web', 'public', 'catalog', 'inventory-index.json')
 )
-# These folders are retained for compatibility with retired path-based APIs
-# and tests. The supported document API writes controlled artifacts to the
-# project share and uses the OS temp directory only while converting.
-CACHE_ROOT = os.environ.get(
-    'ANF3_CACHE_DIR', os.path.join(tempfile.gettempdir(), 'ANF3-Laboratory-Records-cache')
-).strip()
-WORDS_DIR = os.path.join(CACHE_ROOT, 'words')
-PDFS_DIR = os.path.join(CACHE_ROOT, 'pdfs')
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
 # The share is server-only runtime configuration. The browser never receives
 # this path and never writes to it directly.
 PROJECT_SHARE_ROOT = os.environ.get('ANF3_PROJECT_SHARE', '').strip()
-BACKUP_SPOOL_DIR = os.environ.get(
-    'ANF3_BACKUP_SPOOL', os.path.join(BASE_DIR, 'backup-pending')
-).strip()
 
 PDF_WORKFLOW_REGISTRY = {
     'pw-prw': {
@@ -109,7 +98,6 @@ PDF_WORKFLOW_REGISTRY = {
     }
 }
 WORKFLOW_TEMPLATES = {key: value['template'] for key, value in PDF_WORKFLOW_REGISTRY.items()}
-LEGACY_PAGE_FOLDERS = ('pw-prw', 'wfi-pus', 'compressed-air', 'em-air', 'cv')
 PDF_ID_RE = re.compile(r'^[0-9a-f]{64}$')
 SAFE_KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$')
 WINDOWS_DEVICE_NAMES = {
@@ -123,21 +111,7 @@ TEMPLATE_HASH_CACHE = {}
 DOCX_RENDERER_VERSION = '2026-09-11-r1'
 BACKUP_LOCK = threading.Lock()
 
-# Form type folders
-FORM_FOLDERS = [
-    'pw-prw',
-    'wfi-pus',
-    'compressed-air',
-    'em-air',
-    'cleaning-validation',
-    'cleaning-validation-contact',
-    'cleaning-validation-rinse-pour',
-    'cleaning-validation-rinse-membrane',
-    'growth-promotion',
-    'identification'
-]
-
-# Create folder structure
+# Create the controlled template directory when the service starts.
 def create_folder_structure():
     """Create all necessary folders for the application"""
     os.makedirs(TEMPLATE_DIR, exist_ok=True)
@@ -676,25 +650,6 @@ def replace_placeholders_in_file(template_path, output_path, data):
 # Helper Functions
 # ============================================
 
-def get_form_folder(template_name):
-    """Get folder name from template name"""
-    if 'pw-prw' in template_name.lower():
-        return 'pw-prw'
-    elif 'wfi-pus' in template_name.lower():
-        return 'wfi-pus'
-    elif 'compressed-air' in template_name.lower() or template_name.lower().startswith('ca-'):
-        return 'compressed-air'
-    elif 'em-air' in template_name.lower() or template_name.lower().startswith('em-'):
-        return 'em-air'
-    elif 'cleaning' in template_name.lower() or template_name.lower().startswith('cv-'):
-        return 'cleaning-validation'
-    elif 'growth' in template_name.lower():
-        return 'growth-promotion'
-    elif 'identification' in template_name.lower() or 'id-' in template_name.lower():
-        return 'identification'
-    else:
-        return 'other'
-
 # ============================================
 # Static Files & Routes
 # ============================================
@@ -711,10 +666,17 @@ PORT_FILE = os.path.join(BASE_DIR, '.anf3-port')
 
 
 def _port_is_free(host, port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener_probe:
+        listener_probe.settimeout(0.2)
         try:
-            probe.bind((host, port))
+            if listener_probe.connect_ex((host, port)) == 0:
+                return False
+        except OSError:
+            pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bind_probe:
+        bind_probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            bind_probe.bind((host, port))
             return True
         except OSError:
             return False
@@ -769,17 +731,8 @@ def _is_file_within(path, root):
 
 @app.route('/<path:filename>')
 def serve_static(filename):
-    """Serve static files from BASE_DIR"""
+    """Serve the built React application and public inventory assets."""
     normalized = filename.replace('\\', '/')
-    legacy_html = any(
-        normalized == f'{folder}/{page}.html'
-        for folder in LEGACY_PAGE_FOLDERS
-        for page in ('list', 'menu', 'print')
-    )
-    shared_asset = (
-        (normalized.startswith('js/') and normalized.endswith('.js')) or
-        normalized == 'css/style.css'
-    )
     dist_candidate = os.path.abspath(os.path.join(DIST_DIR, normalized))
     dist_asset = _is_file_within(dist_candidate, DIST_DIR)
     inventory_pdf = normalized == 'inventory_catalog.pdf'
@@ -789,12 +742,9 @@ def serve_static(filename):
     # every rebuild and the owner would lose the URLs they pasted in. It holds
     # public read endpoints only -- never ANF3_SYNC_TOKEN.
     runtime_config = normalized == 'config.json'
-    if '..' in normalized.split('/') or not (legacy_html or shared_asset or dist_asset
-                                             or inventory_pdf or inventory_index or runtime_config):
+    if '..' in normalized.split('/') or not (dist_asset or inventory_pdf or inventory_index or runtime_config):
         return jsonify({'error': 'Not found'}), 404
-    
-    # Vite emits the React shell into dist/. Keep legacy files at the project
-    # root so existing form/list/print links remain stable.
+
     dist_path = os.path.join(DIST_DIR, filename)
     file_path = dist_path if os.path.isfile(dist_path) else os.path.join(BASE_DIR, filename)
     if runtime_config:
@@ -804,10 +754,7 @@ def serve_static(filename):
     elif inventory_index:
         file_path = next((path for path in INVENTORY_INDEX_PATHS if os.path.isfile(path)), '')
 
-    if filename == 'index.html' and os.path.isfile(os.path.join(DIST_DIR, 'index.html')):
-        file_path = os.path.join(DIST_DIR, 'index.html')
-    
-    # If it's a directory, try to serve index.html
+    # If it is a directory, try to serve an index file from the built app.
     if os.path.isdir(file_path):
         index_path = os.path.join(file_path, 'index.html')
         if os.path.isfile(index_path):
@@ -927,12 +874,6 @@ def _hash_file(path):
     if stamp is not None:
         TEMPLATE_HASH_CACHE[path] = (stamp, result)
     return result
-
-
-def _backup_pending_path(pdf_id):
-    if not PDF_ID_RE.fullmatch(str(pdf_id or '')):
-        return None
-    return os.path.join(BACKUP_SPOOL_DIR, f'{pdf_id}.json')
 
 
 def _path_within(path, root):
@@ -1378,18 +1319,6 @@ def _backup_artifacts(workflow, worksheet_no, pdf_id, word_path, pdf_path, metad
     return _attempt_backup(manifest, retry=retry)
 
 
-def _retry_pending(pdf_id):
-    pending = _backup_pending_path(pdf_id)
-    if not pending or not os.path.isfile(pending):
-        return {'status': 'not-pending', 'configured': bool(PROJECT_SHARE_ROOT), 'pdfId': pdf_id}
-    try:
-        with open(pending, 'r', encoding='utf-8') as source:
-            manifest = json.load(source)
-    except (OSError, ValueError) as error:
-        return {'status': 'failed', 'configured': bool(PROJECT_SHARE_ROOT), 'pdfId': pdf_id, 'error': str(error)}
-    return _attempt_backup(manifest, retry=True)
-
-
 def _unresolved_placeholders(path):
     """Return literal placeholders left in any generated Word XML part."""
     try:
@@ -1497,13 +1426,6 @@ def _worksheet_changed_fields(workflow, conflict_ids, document_data):
         changed.update(key for key in set(current) | set(previous)
                        if current.get(key) != previous.get(key))
     return sorted(changed)
-
-
-def _pdf_paths(workflow, pdf_id):
-    if not PDF_ID_RE.fullmatch(pdf_id or ''):
-        return None, None
-    folder = os.path.join(PDFS_DIR, workflow)
-    return os.path.join(folder, f'{pdf_id}.pdf'), os.path.join(folder, f'{pdf_id}.json')
 
 
 def _safe_pdf_filename(value):
@@ -1931,122 +1853,25 @@ def status():
         'projectShareAvailable': bool(PROJECT_SHARE_ROOT and os.path.isdir(PROJECT_SHARE_ROOT)),
         'projectSharePath': os.path.abspath(PROJECT_SHARE_ROOT) if PROJECT_SHARE_ROOT else None,
         'controlledStorage': 'project-share',
-        'folders': FORM_FOLDERS
+        'folders': list(PDF_WORKFLOW_REGISTRY)
     })
 
 @app.route('/api/check-pdf', methods=['GET'])
 def check_pdf():
     return _json_error('Legacy PDF API removed; use /api/pdfs', 410)
     """Check if PDF already exists (for caching). Returns pages list for multi-page docs."""
-    worksheet_no = request.args.get('worksheetNo', '')
-    form_type = request.args.get('formType', 'pw-prw')
-
-    if not worksheet_no:
-        return jsonify({'exists': False, 'error': 'worksheetNo required'})
-
-    pdf_folder = os.path.join(PDFS_DIR, form_type)
-
-    # Check multi-page first: worksheetNo_p1.pdf, worksheetNo_p2.pdf, ...
-    pages = []
-    page = 1
-    while True:
-        p = os.path.join(pdf_folder, f'{worksheet_no}_p{page}.pdf')
-        if os.path.exists(p):
-            pages.append(f'{worksheet_no}_p{page}')
-            page += 1
-        else:
-            break
-
-    if pages:
-        return jsonify({'exists': True, 'worksheetNo': worksheet_no, 'formType': form_type, 'pages': pages})
-
-    # Fallback: single file
-    single = os.path.join(pdf_folder, f'{worksheet_no}.pdf')
-    if os.path.exists(single):
-        return jsonify({'exists': True, 'worksheetNo': worksheet_no, 'formType': form_type, 'pages': [worksheet_no]})
-
-    return jsonify({'exists': False, 'worksheetNo': worksheet_no, 'formType': form_type, 'pages': []})
-
 @app.route('/api/get-cached-pdf', methods=['GET'])
 def get_cached_pdf():
     return _json_error('Legacy PDF API removed; use a pdfId download URL', 410)
     """Get existing PDF file (cached)"""
-    worksheet_no = request.args.get('worksheetNo', '')
-    form_type = request.args.get('formType', 'pw-prw')
-    
-    if not worksheet_no:
-        return jsonify({'error': 'worksheetNo required'}), 400
-    
-    pdf_folder = os.path.join(PDFS_DIR, form_type)
-    pdf_path = os.path.join(pdf_folder, f'{worksheet_no}.pdf')
-    
-    if not os.path.exists(pdf_path):
-        return jsonify({'error': 'PDF not found'}), 404
-    
-    print(f"[CACHE] Returning cached PDF: {pdf_path}")
-    return send_file(pdf_path, mimetype='application/pdf')
-
 @app.route('/api/generate-words', methods=['POST'])
 def generate_words():
     return _json_error('Legacy PDF API removed; use /api/pdfs', 410)
     """Step 1: สร้าง DOCX ทุกไฟล์ก่อน คืน list ของ fileKeys ที่พร้อม convert"""
-    try:
-        data = request.json
-        template_name = data.get('templateName', 'pw-prw-template.docx')
-        form_type     = data.get('formType', get_form_folder(template_name))
-        pages         = data.get('pages', [])  # [{worksheetNo, tags}]
-
-        template_path = os.path.join(TEMPLATE_DIR, template_name)
-        if not os.path.exists(template_path):
-            return jsonify({'error': f'Template not found: {template_name}'}), 500
-
-        word_folder = os.path.join(WORDS_DIR, form_type)
-        os.makedirs(word_folder, exist_ok=True)
-
-        created = []
-        for p in pages:
-            key       = p.get('worksheetNo')
-            tags      = p.get('tags', {})
-            word_path = os.path.join(word_folder, f'{key}.docx')
-            replace_placeholders_in_file(template_path, word_path, tags)
-            created.append({'key': key, 'wordPath': word_path})
-            print(f"[WORD] created: {word_path}")
-
-        return jsonify({'success': True, 'files': created})
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/api/convert-word-to-pdf', methods=['POST'])
 def convert_word_to_pdf():
     return _json_error('Legacy path-based API removed; use /api/pdfs', 410)
     """Step 2: รับ wordPath เดียว แปลง PDF แล้วคืน PDF blob"""
-    try:
-        data      = request.json
-        word_path = data.get('wordPath')
-        form_type = data.get('formType', 'pw-prw')
-        key       = data.get('key')
-
-        if not word_path or not os.path.exists(word_path):
-            return jsonify({'error': f'Word file not found: {word_path}'}), 404
-
-        pdf_folder = os.path.join(PDFS_DIR, form_type)
-        os.makedirs(pdf_folder, exist_ok=True)
-        pdf_path = os.path.join(pdf_folder, f'{key}.pdf')
-
-        success, converter, error = convert_to_pdf(word_path, pdf_path)
-        if not success:
-            return jsonify({'error': error or 'PDF conversion failed'}), 500
-        if not os.path.exists(pdf_path):
-            return jsonify({'error': 'PDF file not created'}), 500
-
-        return send_file(pdf_path, mimetype='application/pdf')
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/api/preview-pdf', methods=['POST'])
 def preview_pdf():
     return _json_error('Legacy PDF API removed; use /api/pdfs', 410)
@@ -2055,125 +1880,18 @@ def preview_pdf():
       - legacy: { worksheetNo, templateName, formType, ...tags }
       - multi-page: { worksheetNo, templateName, formType, pages: [{...tags}, ...] }
     """
-    try:
-        data = request.json
-        worksheet_no = data.get('worksheetNo', 'preview')
-        template_name = data.get('templateName', 'pw-prw-template.docx')
-        form_type = data.get('formType', get_form_folder(template_name))
-        pages_input = data.get('pages')   # list of per-page tag dicts, or None
-
-        template_path = os.path.join(TEMPLATE_DIR, template_name)
-        if not os.path.exists(template_path):
-            return jsonify({'error': f'Template not found: {template_name}'}), 500
-
-        word_folder = os.path.join(WORDS_DIR, form_type)
-        pdf_folder  = os.path.join(PDFS_DIR,  form_type)
-        os.makedirs(word_folder, exist_ok=True)
-        os.makedirs(pdf_folder,  exist_ok=True)
-
-        word_path = os.path.join(word_folder, f'{worksheet_no}.docx')
-        pdf_path  = os.path.join(pdf_folder,  f'{worksheet_no}.pdf')
-
-        print(f"\n[PDF] {worksheet_no} | {template_name} | pages={len(pages_input) if pages_input else 1}")
-
-        if pages_input and len(pages_input) > 0:
-            # Multi-page: sanitize each page's data and build single DOCX
-            sanitized_pages = [sanitize_data_for_xml(p) for p in pages_input]
-            build_multipage_docx(template_path, word_path, sanitized_pages)
-        else:
-            # Single page (legacy)
-            replace_placeholders_in_file(template_path, word_path, data)
-
-        success, converter, error = convert_to_pdf(word_path, pdf_path)
-        if not success:
-            detail = error or 'PDF conversion failed'
-            if 'no pdf converter' in detail.lower() or 'not available' in detail.lower():
-                detail = ('No PDF converter available. Install Microsoft Office + run '
-                          'INSTALL-MSOFFICE-SUPPORT.bat, or install LibreOffice.')
-            return jsonify({'error': detail}), 500
-
-        if not os.path.exists(pdf_path):
-            return jsonify({'error': 'PDF file not created'}), 500
-
-        return send_file(pdf_path, mimetype='application/pdf')
-
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/print-pdf', methods=['POST'])
 def print_pdf():
     return _json_error('Legacy PDF API removed; use /api/pdfs/<pdfId>/save-desktop', 410)
     """Copy PDF to Desktop"""
-    try:
-        data = request.json
-        worksheet_no = data.get('worksheetNo')
-        form_type = data.get('formType', 'pw-prw')
-        copy_to_desktop = data.get('copyToDesktop', True)
-        
-        pdf_folder = os.path.join(PDFS_DIR, form_type)
-        pdf_path = os.path.join(pdf_folder, f'{worksheet_no}.pdf')
-        
-        if not os.path.exists(pdf_path):
-            # Try finding in base folder (backward compatibility)
-            pdf_path_old = os.path.join(PDFS_DIR, f'{worksheet_no}.pdf')
-            if os.path.exists(pdf_path_old):
-                pdf_path = pdf_path_old
-            else:
-                return jsonify({'error': f'PDF not found'}), 404
-        
-        if copy_to_desktop:
-            desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-            dest_path = os.path.join(desktop, f'{worksheet_no}.pdf')
-            shutil.copy2(pdf_path, dest_path)
-            
-            return jsonify({
-                'success': True,
-                'path': dest_path,
-                'filename': f'{worksheet_no}.pdf'
-            })
-        
-        return jsonify({'success': True, 'path': pdf_path})
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/check-desktop-files', methods=['POST'])
 def check_desktop_files():
     return _json_error('Legacy path-based API removed', 410)
     """Check if Word/PDF files already exist on Desktop for given worksheetNo + pages"""
-    try:
-        data = request.json
-        worksheet_no = data.get('worksheetNo', '')
-        page_keys = data.get('pageKeys', [worksheet_no])  # list of keys e.g. ["AT-26-0026_p1","AT-26-0026_p2"]
-        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-
-        existing = [k for k in page_keys if os.path.exists(os.path.join(desktop, f'{k}.pdf'))]
-        return jsonify({'existing': existing})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/list-files', methods=['GET'])
 def list_files():
     return _json_error('File listing is not available', 410)
     """List generated files"""
-    try:
-        files = {}
-        
-        for form_type in FORM_FOLDERS:
-            word_folder = os.path.join(WORDS_DIR, form_type)
-            pdf_folder = os.path.join(PDFS_DIR, form_type)
-            
-            files[form_type] = {
-                'words': os.listdir(word_folder) if os.path.exists(word_folder) else [],
-                'pdfs': os.listdir(pdf_folder) if os.path.exists(pdf_folder) else []
-            }
-        
-        return jsonify(files)
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 # ============================================
 # Main
 # ============================================
@@ -2192,13 +1910,12 @@ if __name__ == '__main__':
     print("   WATER RECORD SYSTEM - PDF SERVER v4.2.0")
     print("=" * 60)
     print()
-    print("   Folder Structure:")
-    print(f"   Words: {WORDS_DIR}")
-    print(f"   PDFs:  {PDFS_DIR}")
+    print("   Controlled storage:")
+    print(f"   Share: {PROJECT_SHARE_ROOT or '(not configured)'}")
     print()
-    print("   Supported Form Types:")
-    for folder in FORM_FOLDERS:
-        print(f"   - {folder}")
+    print("   Supported workflows:")
+    for workflow in PDF_WORKFLOW_REGISTRY:
+        print(f"   - {workflow}")
     print()
     
     if MS_OFFICE_AVAILABLE:

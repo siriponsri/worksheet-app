@@ -12,10 +12,9 @@ rem ===========================================================================
 
 title ANF3 Laboratory Records
 set "APP_DIR=%~dp0"
-rem Only a release launched from the shared package may derive its durable
-rem root from the launcher directory. A local AppData copy must receive an
-rem explicit share root; it must never become controlled storage implicitly.
-set "SHARE_ROOT="
+rem Controlled documents and logs require an explicit server-only Share root.
+rem The launcher directory is a code/runtime location, never an implicit
+rem durable-storage location.
 set "LOCAL_DIR=%LOCALAPPDATA%\ANF3-Laboratory-Records\"
 set "LOCK_HELD="
 set "FOUND="
@@ -42,18 +41,15 @@ if /i "%~1"=="/here" (
   set "APP_DIR=%LOCAL_DIR%"
   goto :run_here
 )
-if /i "%APP_DIR%"=="%LOCAL_DIR%" (
-  if not defined ANF3_PROJECT_SHARE (
-    echo.
-    echo [ERROR] This local ANF3 copy has no configured project share.
-    echo        Start the release launcher from the shared package, or set
-    echo        ANF3_PROJECT_SHARE before running the local copy.
-    pause
-    exit /b 1
-  )
-  goto :run_here
+if not defined ANF3_PROJECT_SHARE (
+  echo.
+  echo [ERROR] ANF3_PROJECT_SHARE is not configured.
+  echo        Set it to the ANF3 worksheet Share before starting the app.
+  echo        The launcher directory is not controlled document storage.
+  pause
+  exit /b 1
 )
-set "SHARE_ROOT=%APP_DIR%"
+if /i "%APP_DIR%"=="%LOCAL_DIR%" goto :run_here
 
 echo.
 echo ANF3 Laboratory Records
@@ -111,13 +107,15 @@ rem rebuild the same local workspace concurrently.
 call :acquire_lock
 if errorlevel 1 goto :concurrent_launch
 
-call :recorded_port_busy "%LOCAL_DIR%"
-if errorlevel 1 goto :busy_server
+rem No healthy service was found, so this is stale runtime state. It is safe
+rem to discard the recorded port only after this launch owns the lock; Flask
+rem chooses a free port and writes the new value when it starts.
+del /q "%LOCAL_DIR%.anf3-port" >nul 2>&1
 
 echo [1/2] Copying the release to this PC...
 robocopy "%APP_DIR%." "%LOCAL_DIR%." /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 ^
-  /XD ".venv" "node_modules" ".git" ".uv-cache" ".agent-bus" "output" "pdfs" "words" "release" "shots" "__pycache__" ".anf3-launch.lock" ^
-  /XF ".anf3-port" "activity-log.jsonl" "log-forward.json" "OVERNIGHT_LUNA.md" "luna-overnight.log"
+  /XD ".venv" "node_modules" ".git" ".agents" ".playwright-cli" ".pytest_cache" ".uv-cache" ".agent-bus" ".tmp-*" "output" "pdfs" "words" "release" "shots" "__pycache__" ".anf3-launch.lock" ^
+  /XF ".anf3-port" "activity-log.jsonl" "log-forward.json"
 if errorlevel 8 (
   call :release_lock
   echo.
@@ -129,6 +127,7 @@ if errorlevel 8 (
   exit /b 1
 )
 echo       Copy complete.
+call :clean_retired_runtime
 set "APP_DIR=%LOCAL_DIR%"
 goto :run_here_locked
 
@@ -144,11 +143,11 @@ rem status endpoint before opening the browser.
 call :find_server "%APP_DIR%"
 if defined FOUND goto :open_server
 
-call :recorded_port_busy "%APP_DIR%"
-if errorlevel 1 goto :busy_server
-
 call :acquire_lock
 if errorlevel 1 goto :concurrent_launch
+rem A missing or foreign service makes the recorded port stale. Do not block
+rem startup on it; the server owns port selection and will record its choice.
+del /q "%APP_DIR%.anf3-port" >nul 2>&1
 goto :run_here_locked
 
 :run_here_locked
@@ -169,13 +168,10 @@ if not exist "%APP_DIR%.venv\Scripts\python.exe" (
 )
 
 echo.
-rem Normal release paths use the shared package as the durable root. /here
-rem developer mode and local-copy paths must have supplied it explicitly.
-if not defined ANF3_PROJECT_SHARE set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"
 echo [INFO] Starting the local ANF3 service...
 echo          Project share: %ANF3_PROJECT_SHARE%
 set "ANF3_NO_BROWSER=1"
-start "ANF3 Local Server" /min "%APP_DIR%START-SERVER.bat"
+start "ANF3 Local Server" /min "%ComSpec%" /d /c call "%APP_DIR%START-SERVER.bat"
 set "ANF3_NO_BROWSER="
 call :wait_for_server
 set "WAIT_CODE=%errorlevel%"
@@ -226,15 +222,6 @@ echo.
 echo [ERROR] No supported DOCX-to-PDF converter was found on this PC.
 echo        Install Microsoft Word and run INSTALL-MSOFFICE-SUPPORT.bat,
 echo        or install LibreOffice, then run START-ANF3.bat again.
-pause
-exit /b 1
-
-:busy_server
-call :release_lock
-echo.
-echo [ERROR] A process is using the ANF3 port recorded for this PC, but it is
-echo        not answering as ANF3. Close that process or restart the PC, then
-echo        try again. No files were refreshed.
 pause
 exit /b 1
 
@@ -299,22 +286,6 @@ rem for tens of seconds before the server was even started.
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -Command "$ports=@(); $path='%STATE_DIR%.anf3-port'; if(Test-Path -LiteralPath $path){$saved=(Get-Content -LiteralPath $path -TotalCount 1).Trim(); if($saved -match '^\d+$'){$ports+=[int]$saved}}; $ports+=8000..8039; foreach($port in ($ports|Select-Object -Unique)){ $client=New-Object Net.Sockets.TcpClient; try{$task=$client.ConnectAsync('127.0.0.1',[int]$port); if(-not $task.Wait(50) -or -not $client.Connected){continue}; try{$reply=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 ('http://127.0.0.1:'+$port+'/api/status'); $body=$reply.Content|ConvertFrom-Json; if($reply.StatusCode -eq 200 -and $body.status -eq 'running' -and $body.converterAvailable -eq $true -and $null -ne $body.folders){Write-Output $port; break}}catch{}}finally{$client.Dispose()}}"`) do set "FOUND=%%P"
 exit /b 0
 
-rem A recorded port that is occupied but not ANF3 is a stop condition for a
-rem refresh. It avoids copying files while a stale/foreign process may hold a
-rem file or keep the user pointed at the wrong service.
-:recorded_port_busy
-set "RECORDED="
-if not exist "%~1.anf3-port" exit /b 0
-set /p RECORDED=<"%~1.anf3-port"
-if not defined RECORDED exit /b 0
-call :tcp_port_busy !RECORDED!
-if errorlevel 1 exit /b 0
-exit /b 1
-
-:tcp_port_busy
-powershell -NoProfile -NonInteractive -Command "$client=New-Object Net.Sockets.TcpClient; try { $task=$client.ConnectAsync('127.0.0.1',[int]('%1')); if(-not $task.Wait(500)){ exit 1 }; if($client.Connected){ exit 0 }; exit 1 } catch { exit 1 } finally { $client.Dispose() }" >nul 2>&1
-exit /b %errorlevel%
-
 rem ---------------------------------------------------------------------------
 :wait_for_server
 set "FOUND="
@@ -353,6 +324,15 @@ exit /b 0
 if not defined LOCK_HELD exit /b 0
 rmdir /s /q "%LOCAL_DIR%.anf3-launch.lock" >nul 2>&1
 set "LOCK_HELD="
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+rem A pre-v7 local copy may contain controlled outputs or retired application
+rem files excluded from robocopy. They are disposable local state, not the
+rem Share source of truth, so remove only these exact paths after refresh.
+:clean_retired_runtime
+powershell -NoProfile -NonInteractive -Command "$root=[IO.Path]::GetFullPath('%LOCAL_DIR%'); $paths=@('.agent-bus','.agents','.playwright-cli','.pytest_cache','output','pdfs','words','backup-pending','release','activity-log.jsonl','server\log-forward.json'); foreach($relative in $paths){$target=[IO.Path]::GetFullPath((Join-Path $root $relative)); if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing to clean outside the local runtime'}; if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Recurse -Force}}; Get-ChildItem -LiteralPath $root -Force -Directory -Filter '.tmp-*' -ErrorAction SilentlyContinue | ForEach-Object { if(-not $_.FullName.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing to clean outside the local runtime'}; Remove-Item -LiteralPath $_.FullName -Recurse -Force }" >nul 2>&1
+if errorlevel 1 echo [WARNING] Some retired local runtime files could not be removed; the Share remains authoritative.
 exit /b 0
 
 rem ---------------------------------------------------------------------------

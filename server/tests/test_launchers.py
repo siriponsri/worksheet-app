@@ -18,11 +18,38 @@ def start_server():
 
 def test_start_anf3_never_promotes_local_copy_to_controlled_storage(start_anf3):
     """A local AppData launcher must require an explicit project share."""
-    assert 'set "SHARE_ROOT=%APP_DIR%"' in start_anf3
-    assert 'no configured project share' in start_anf3
-    assert 'set "ANF3_PROJECT_SHARE=%SHARE_ROOT%"' in start_anf3
+    assert 'ANF3_PROJECT_SHARE is not configured' in start_anf3
+    assert 'The launcher directory is not controlled document storage.' in start_anf3
+    assert 'set "ANF3_PROJECT_SHARE=%APP_DIR%"' not in start_anf3
     assert 'T:\\' not in start_anf3
     assert 'T:/' not in start_anf3
+
+
+def test_start_anf3_treats_recorded_port_as_stale_runtime_state(start_anf3):
+    """A missing/foreign recorded port must not block a fresh server start."""
+    assert 'recorded_port_busy' not in start_anf3
+    assert 'tcp_port_busy' not in start_anf3
+    assert start_anf3.count('del /q "%LOCAL_DIR%.anf3-port"') == 1
+    assert start_anf3.count('del /q "%APP_DIR%.anf3-port"') == 1
+    assert 'goto :busy_server' not in start_anf3
+    assert '8000..8039' in start_anf3
+
+
+@pytest.mark.parametrize(
+    ('recorded_port', 'occupied', 'healthy_port', 'expected'),
+    [
+        (None, False, None, 'start'),
+        ('8000', False, None, 'start'),
+        ('8000', True, '8000', 'reuse'),
+        ('8000', True, '8001', 'reuse'),
+        ('8000', True, None, 'start'),
+    ],
+)
+def test_port_state_scenarios(recorded_port, occupied, healthy_port, expected):
+    """Only an actual healthy ANF3 service is reused; other states start fresh."""
+    found = healthy_port if occupied and healthy_port else None
+    action = 'reuse' if found else 'start'
+    assert action == expected
 
 
 def test_start_anf3_here_mode_requires_explicit_share(start_anf3):

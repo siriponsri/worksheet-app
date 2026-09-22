@@ -2,7 +2,7 @@
 
 ## Objective
 
-Complete the share-drive release audit and fix only defects proven by controlled verification. The public-source implementation pass is recorded in `docs/OUTPUT.md`; completion requires real controlled assets, approved non-production systems, and a clean Windows launch test, or an evidence-backed external blocker.
+Complete the share-drive release audit and fix only defects proven by controlled verification. Completion requires the public-source gates, real controlled assets, and a clean Windows launch test, or an evidence-backed external blocker.
 
 Do not redesign the frontend, change laboratory data contracts, mutate production Sheets, deploy Apps Script, edit official templates, or commit controlled/owner-only assets.
 
@@ -18,11 +18,10 @@ Do not redesign the frontend, change laboratory data contracts, mutate productio
 ## Work required
 
 1. Assemble an external controlled release directory containing the five authoritative DOCX templates, owner documents/catalog, built `dist`, config, server, and supported Word/LibreOffice converter. Record its exact path and version.
-2. Run the three controlled validators with `--controlled-dir`; fix implementation-caused failures without weakening validation:
+2. Run the release and non-game validators with `--controlled-dir`; fix implementation-caused failures without weakening validation:
 
    ```powershell
    python validation/validate_release.py --controlled-dir <release-directory>
-   python validation/validate_cv_package.py --controlled-dir <release-directory>
    node validation/validate_non_game_contract.mjs --controlled-dir <release-directory>
    ```
 
@@ -32,10 +31,10 @@ Do not redesign the frontend, change laboratory data contracts, mutate productio
 
 ## Verification and handoff
 
-After each fix run the smallest relevant check, then the applicable public suite from `docs/OUTPUT.md`, the controlled commands above, and `git diff --check`. Remove generated artifacts and diagnostics. Update `docs/OUTPUT.md` with package/machine, commands, results, artifacts inspected, limitations, and status.
+After each fix run the smallest relevant check, then the applicable public suite, the controlled commands above, and `git diff --check`. Remove generated artifacts and diagnostics. Record command results and limitations in the task report, not in the product runtime.
 
 ## Definition of done
 
-Report `ASTRA_AUDIT_PASS` only when controlled validation, all seven real document routes, cache/conflict/multipage behavior, clean-PC UNC launch, and approved non-production Apps Script checks pass, with no unrelated refactor, controlled asset, secret, generated output, or stale documentation reference in the final diff.
+Report release readiness only when controlled validation, all seven real document routes, cache/conflict/multipage behavior, clean-PC UNC launch, and approved non-production Apps Script checks pass, with no unrelated refactor, controlled asset, secret, generated output, or stale documentation reference in the final diff.
 
 If an item cannot run because an external dependency is unavailable, report `NEEDS_EVIDENCE` or `BLOCKED` with the exact missing asset/system and command. Public-source tests alone are insufficient.

@@ -67,11 +67,12 @@ check(/robocopy/i.test(launcher),
 
 /* The per-machine state must never be copied down from the master, or every
    PC inherits another machine's environment, port file and audit log. */
-for (const excluded of ['.venv', 'node_modules', '.agent-bus', 'output', 'pdfs', 'words']) {
-  check(new RegExp(`/XD[^\\n]*"${excluded.replace('.', '\\.')}"`).test(launcher),
-    `START-ANF3.bat must exclude ${excluded}/ from the copy`);
+for (const excluded of ['.venv', 'node_modules', '.agents', '.playwright-cli', '.pytest_cache', '.agent-bus', '.tmp-*', 'output', 'pdfs', 'words']) {
+  const escaped = excluded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  check(new RegExp(`/XD[^\\n]*"${escaped}"`).test(launcher),
+   `START-ANF3.bat must exclude ${excluded}/ from the copy`);
 }
-for (const excluded of ['.anf3-port', 'activity-log.jsonl', 'log-forward.json', 'OVERNIGHT_LUNA.md', 'luna-overnight.log']) {
+for (const excluded of ['.anf3-port', 'activity-log.jsonl', 'log-forward.json']) {
   check(new RegExp(`/XF[^\\n]*"${excluded.replace(/\./g, '\\.')}"`).test(launcher),
     `START-ANF3.bat must exclude ${excluded} from the copy`);
 }
@@ -88,6 +89,14 @@ check(/script\[\.\]google\[\.\]com.*\/exec/.test(launcher),
 check(/:check_converter/.test(launcher) && /LibreOffice/.test(launcher),
   'START-ANF3.bat must report a missing DOCX-to-PDF converter before launch');
 
+check(!/recorded_port_busy|tcp_port_busy/.test(launcher),
+  'START-ANF3.bat must not block on a stale or foreign recorded port');
+check((launcher.match(/del \/q "%LOCAL_DIR%\.anf3-port"/g) || []).length === 1
+  && (launcher.match(/del \/q "%APP_DIR%\.anf3-port"/g) || []).length === 1,
+  'START-ANF3.bat must clear stale port state only after acquiring its launch lock');
+check(!/goto :busy_server/.test(launcher),
+  'START-ANF3.bat must continue after a stale/foreign recorded port');
+
 check(/:wait_for_server/.test(launcher) && /\/api\/status/.test(launcher),
   'START-ANF3.bat must wait for the local service status endpoint');
 
@@ -103,6 +112,10 @@ check(!/for \/l %%P in \(8000,1,8039\)/.test(launcher),
 
 check(/\.anf3-launch\.lock/.test(launcher),
   'START-ANF3.bat must serialize concurrent local refresh/start operations');
+check(/:clean_retired_runtime/.test(launcher) && /Remove-Item/.test(launcher),
+  'START-ANF3.bat must remove retired local outputs and coordination state after refresh');
+check(!/set "ANF3_PORT=8000"/.test(read('START-SERVER.bat')),
+  'START-SERVER.bat must not require a fixed port');
 
 check(/owner\.txt/.test(launcher) && /Win32_Process/.test(launcher),
   'START-ANF3.bat must record and inspect the owning launcher process');
@@ -148,6 +161,10 @@ check(!/Starting from the share drive instead/i.test(launcher),
 
 check(/if\s+\/i\s+"%APP_DIR%"=="%LOCAL_DIR%"\s+goto\s+:run_here/i.test(launcher),
   'START-ANF3.bat must short-circuit when it is already the local copy, or it hands over to itself forever');
+check(/ANF3_PROJECT_SHARE is not configured/.test(launcher)
+  && /launcher directory is not controlled document storage/.test(launcher)
+  && !/set "ANF3_PROJECT_SHARE=%APP_DIR%"/.test(launcher),
+  'START-ANF3.bat must require explicit Share configuration and never use the checkout as durable storage');
 
 /* The token must never reach a laboratory PC through the copy. */
 check(!/ANF3_SYNC_TOKEN/.test(launcher), 'START-ANF3.bat must not mention the sync token');

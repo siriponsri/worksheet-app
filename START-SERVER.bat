@@ -53,8 +53,7 @@ echo ============================================
 echo   ANF3 LABORATORY RECORDS v7
 echo ============================================
 echo   Starting the local server...
-echo   If port 8000 is taken by another program,
-echo   the next free port is used automatically
+echo   The first available local port is selected automatically
 echo   and the address is printed below.
 echo.
 echo   Keep this window open while using the app.
@@ -63,7 +62,6 @@ echo ============================================
 echo.
 
 set "ANF3_HOST=127.0.0.1"
-set "ANF3_PORT=8000"
 "%VENV_PY%" "%APP_DIR%server\pdf_server.py"
 set "EXIT_CODE=%errorlevel%"
 
